@@ -34,18 +34,50 @@ export const getFullReport = async (req, res) => {
     const result = await pool.query(
   `
   SELECT
-    ndc,
-    MAX(drug_name) AS drug_name,
-    MAX(package_size) AS package_size,
-    COUNT(*) AS total_ordered,
-    SUM(quantity) AS total_billed,
-    SUM(primary_paid) AS total_paid,
-    SUM(COALESCE(primary_paid, 0) + COALESCE(secondary_paid, 0)) AS total_amount,
-    COUNT(*) - SUM(quantity) AS total_shortage
-  FROM inventory_rows
-  WHERE audit_id = $1
-  GROUP BY ndc
-  ORDER BY ndc
+    i.ndc,
+    MAX(i.drug_name) AS drug_name,
+    MAX(i.package_size) AS package_size,
+    COALESCE(w.total_ordered, 0) AS total_ordered,
+    SUM(i.quantity) AS total_billed,
+    SUM(COALESCE(i.primary_paid, 0) + COALESCE(i.secondary_paid, 0)) AS total_amount,
+    COALESCE(w.total_cost, 0) AS cost,
+    COALESCE(w.total_ordered, 0) - SUM(i.quantity) AS total_shortage,
+
+    COALESCE(SUM(CASE WHEN COALESCE(m3.pbm_name, m2.pbm_name) = 'HORIZON' THEN i.quantity ELSE 0 END), 0) AS horizon,
+    COALESCE(SUM(CASE WHEN COALESCE(m3.pbm_name, m2.pbm_name) = 'EXPRESS SCRIPTS' THEN i.quantity ELSE 0 END), 0) AS express,
+    COALESCE(SUM(CASE WHEN COALESCE(m3.pbm_name, m2.pbm_name) = 'CAREMARK' THEN i.quantity ELSE 0 END), 0) AS cvs_caremark,
+    COALESCE(SUM(CASE WHEN COALESCE(m3.pbm_name, m2.pbm_name) IN ('OPTUM','OPTUMRX') THEN i.quantity ELSE 0 END), 0) AS optumrx,
+    COALESCE(SUM(CASE WHEN COALESCE(m3.pbm_name, m2.pbm_name) = 'HUMANA' THEN i.quantity ELSE 0 END), 0) AS humana,
+    COALESCE(SUM(CASE WHEN COALESCE(m3.pbm_name, m2.pbm_name) = 'CARELONRX' THEN i.quantity ELSE 0 END), 0) AS nj_medicaid,
+    COALESCE(SUM(CASE WHEN COALESCE(m3.pbm_name, m2.pbm_name) ILIKE '%SOUTHERN SCRIPTS%' THEN i.quantity ELSE 0 END), 0) AS ssc,
+    COALESCE(SUM(CASE WHEN COALESCE(m3.pbm_name, m2.pbm_name) = 'MEDIMPACT' THEN i.quantity ELSE 0 END), 0) AS pdmi
+
+  FROM inventory_rows i
+
+  LEFT JOIN LATERAL (
+    SELECT pbm_name FROM master_sheet m
+    WHERE UPPER(TRIM(m.bin)) = UPPER(TRIM(COALESCE(i.primary_bin,'')))
+      AND UPPER(TRIM(COALESCE(m.pcn,''))) = UPPER(TRIM(COALESCE(i.primary_pcn,'')))
+      AND UPPER(TRIM(COALESCE(m.grp,''))) = UPPER(TRIM(COALESCE(i.primary_group,'')))
+    LIMIT 1
+  ) m3 ON true
+
+  LEFT JOIN LATERAL (
+    SELECT pbm_name FROM master_sheet m
+    WHERE UPPER(TRIM(m.bin)) = UPPER(TRIM(COALESCE(i.primary_bin,'')))
+      AND UPPER(TRIM(COALESCE(m.pcn,''))) = UPPER(TRIM(COALESCE(i.primary_pcn,'')))
+      AND m3.pbm_name IS NULL
+    LIMIT 1
+  ) m2 ON true
+
+  LEFT JOIN (
+    SELECT ndc, SUM(quantity) AS total_ordered, SUM(COALESCE(total_cost,0)) AS total_cost
+    FROM wholesaler_rows WHERE audit_id = $1 GROUP BY ndc
+  ) w ON w.ndc = i.ndc
+
+  WHERE i.audit_id = $1
+  GROUP BY i.ndc, w.total_ordered, w.total_cost
+  ORDER BY i.ndc
   `,
   [id]
 );
@@ -165,17 +197,15 @@ export const uploadWholesalerFiles = async (req, res) => {
 
     const metadata = JSON.parse(req.body.metadata);
 
-    const filesArray = req.files
-      .map((file) => {
-        const meta = metadata.find((m) => m.field === file.fieldname);
-        if (!meta) return null;
-
-        return {
-          wholesaler_name: meta.wholesaler_name,
-          file_name: file.filename,
-        };
-      })
-      .filter(Boolean);
+    const filesArray = req.files.map((file) => {
+      const meta = metadata.find((m) => m.field === file.fieldname);
+      if (!meta) return null;
+      return {
+        wholesaler_name: meta.wholesaler_name,
+        file_name: file.filename,
+        headerMapping: meta.headerMapping || {},  // 👈 pass mapping through
+      };
+    }).filter(Boolean);
 
     const saved = await auditService.saveWholesalerFiles(id, filesArray);
 

@@ -174,26 +174,28 @@ export const insertInventoryRows = async (auditId, rows) => {
 
     for (const r of rows) {
       await client.query(
-        `INSERT INTO inventory_rows
-        (audit_id, ndc, rx_number, status, date_filled, drug_name, quantity, package_size,
-         primary_bin, primary_paid, secondary_bin, secondary_paid, brand)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [
-  auditId,
-  r.ndc || null,
-  r.rx_number || null,
-  r.status || null,
-  r.date_filled || null,
-  r.drug_name || null,
-  r.quantity ? parseInt(r.quantity) : null,
-  r.package_size || null,
-  r.primary_bin || null,
-  r.primary_paid ? parseFloat(r.primary_paid) : null,
-  r.secondary_bin || null,
-  r.secondary_paid ? parseFloat(r.secondary_paid) : null,
-  r.brand || null,
-]
-      );
+  `INSERT INTO inventory_rows
+  (audit_id, ndc, rx_number, status, date_filled, drug_name, quantity, package_size,
+   primary_bin, primary_pcn, primary_group, primary_paid, secondary_bin, secondary_paid, brand)
+  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+  [
+    auditId,
+    r.ndc || null,
+    r.rx_number || null,
+    r.status || null,
+    r.date_filled || null,
+    r.drug_name || null,
+    r.quantity ? parseInt(r.quantity) : null,
+    r.package_size || null,
+    r.primary_bin || null,
+    r.primary_pcn || null,
+    r.primary_group || null,
+    r.primary_paid ? parseFloat(r.primary_paid) : null,
+    r.secondary_bin || null,
+    r.secondary_paid ? parseFloat(r.secondary_paid) : null,
+    r.brand || null,
+  ]
+);
     }
 
     await client.query("COMMIT");
@@ -207,42 +209,97 @@ export const insertInventoryRows = async (auditId, rows) => {
 };
 
 export const saveWholesalerFiles = async (auditId, filesArray) => {
-  const auditCheck = await pool.query("SELECT id FROM audits WHERE id = $1", [
-    auditId,
-  ]);
-
+  const auditCheck = await pool.query("SELECT id FROM audits WHERE id = $1", [auditId]);
   if (auditCheck.rows.length === 0) throw new Error("Audit not found");
 
-  const existing = await pool.query(
-    "SELECT id FROM audit_wholesaler_files WHERE audit_id = $1",
-    [auditId],
-  );
+  const results = [];
 
-  if (existing.rows.length === 0) {
-    const insert = await pool.query(
-      `
-      INSERT INTO audit_wholesaler_files (audit_id, wholesaler_files)
-      VALUES ($1, $2)
-      RETURNING *
-      `,
-      [auditId, JSON.stringify(filesArray)],
+  for (const fileObj of filesArray) {
+    // Insert into wholesaler_files table
+    const fileInsert = await pool.query(
+      `INSERT INTO wholesaler_files (audit_id, wholesaler_name, file_name)
+       VALUES ($1, $2, $3) RETURNING *`,
+      [auditId, fileObj.wholesaler_name, fileObj.file_name]
     );
 
-    return insert.rows[0];
+    const wholesalerFileId = fileInsert.rows[0].id;
+
+    // Parse the CSV and insert rows into wholesaler_rows
+    const filePath = path.join(process.cwd(), "uploads/wholesalers", fileObj.file_name);
+
+    if (!fs.existsSync(filePath)) {
+      console.warn("Wholesaler file not found:", filePath);
+      continue;
+    }
+
+    const content = fs.readFileSync(filePath, "utf-8");
+    const records = parse(content, {
+      columns: true,
+      skip_empty_lines: true,
+      trim: true,
+    });
+
+    const mapping = fileObj.headerMapping || {};
+    console.log("WHOLESALER MAPPING:", JSON.stringify(mapping));
+console.log("SAMPLE ROW KEYS:", records.length > 0 ? Object.keys(records[0]) : []);
+console.log("SAMPLE ROW:", records.length > 0 ? JSON.stringify(records[0]) : "empty");
+
+    // mapping keys: ndcNumber, invoiceDate, itemDescription, quantity, unitPrice, totalPrice
+    // mapping values: actual CSV header names
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      for (const row of records) {
+        console.log("MAPPING:", mapping);
+console.log("ROW KEYS:", Object.keys(row));
+
+// mapping.ndcNumber contains the actual CSV column name user selected
+const ndcCol = mapping.ndcNumber;
+const dateCol = mapping.invoiceDate;
+const descCol = mapping.itemDescription;
+const qtyCol = mapping.quantity;
+const unitCol = mapping.unitPrice;
+const totalCol = mapping.totalPrice;
+
+const ndc = ndcCol ? (row[ndcCol] ?? null) : null;
+const invoiceDate = dateCol ? (row[dateCol] ?? null) : null;
+const productName = descCol ? (row[descCol] ?? null) : null;
+const quantity = qtyCol && row[qtyCol] ? parseInt(String(row[qtyCol]).replace(/[^0-9]/g, '')) : null;
+const unitCost = unitCol && row[unitCol] ? parseFloat(String(row[unitCol]).replace(/[^0-9.]/g, '')) : null;
+const totalCost = totalCol && row[totalCol] ? parseFloat(String(row[totalCol]).replace(/[^0-9.]/g, '')) : null;
+
+        await client.query(
+          `INSERT INTO wholesaler_rows 
+           (audit_id, wholesaler_file_id, ndc, product_name, quantity, unit_cost, total_cost, invoice_date)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            auditId,
+            wholesalerFileId,
+            ndc,
+            productName,
+            quantity,
+            unitCost,
+            totalCost,
+            cleanDate(invoiceDate),
+          ]
+        );
+      }
+
+      await client.query("COMMIT");
+      console.log(`Inserted ${records.length} wholesaler rows for ${fileObj.wholesaler_name}`);
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    results.push(fileInsert.rows[0]);
   }
 
-  const update = await pool.query(
-    `
-    UPDATE audit_wholesaler_files
-    SET wholesaler_files = $2,
-        uploaded_at = NOW()
-    WHERE audit_id = $1
-    RETURNING *
-    `,
-    [auditId, JSON.stringify(filesArray)],
-  );
-
-  return update.rows[0];
+  return results;
 };
 
 // --- NEW ---
