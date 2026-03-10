@@ -75,3 +75,59 @@ CREATE TABLE IF NOT EXISTS wholesaler_rows (
 
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  email TEXT UNIQUE NOT NULL,
+  password TEXT,
+  role TEXT DEFAULT 'user',
+  is_verified BOOLEAN DEFAULT false,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE auth_providers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  provider_user_id TEXT
+);
+
+CREATE TABLE email_otps (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email TEXT,
+  otp TEXT,
+  expires_at TIMESTAMP
+);
+
+CREATE TABLE refresh_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  token TEXT,
+  expires_at TIMESTAMP
+);
+
+CREATE TABLE password_resets (
+  id SERIAL PRIMARY KEY,
+  email TEXT NOT NULL,
+  token TEXT NOT NULL,
+  expires_at TIMESTAMP NOT NULL
+);
+CREATE TABLE IF NOT EXISTS wholesaler_rows (
+    id BIGSERIAL PRIMARY KEY,
+
+    audit_id UUID REFERENCES audits(id) ON DELETE CASCADE,
+    wholesaler_file_id UUID REFERENCES wholesaler_files(id) ON DELETE CASCADE,
+
+    
+    ndc TEXT,
+    product_name TEXT,
+    quantity INTEGER,
+
+    unit_cost NUMERIC,
+    total_cost NUMERIC,
+
+    invoice_date DATE,
+
+    created_at TIMESTAMP DEFAULT NOW()
+);
