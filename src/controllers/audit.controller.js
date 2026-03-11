@@ -73,12 +73,18 @@ LEFT JOIN LATERAL (
 ) pbm ON true
 
 LEFT JOIN (
-  SELECT ndc, SUM(quantity) AS total_ordered, SUM(COALESCE(total_cost,0)) AS total_cost
-  FROM wholesaler_rows WHERE audit_id = $1 GROUP BY ndc
-) w ON w.ndc = i.ndc
+  SELECT
+    REGEXP_REPLACE(ndc, '[^0-9]', '', 'g') AS ndc_normalized,
+    SUM(quantity) AS total_ordered,
+    SUM(COALESCE(total_cost, 0)) AS total_cost
+  FROM wholesaler_rows
+  WHERE audit_id = $1
+  GROUP BY REGEXP_REPLACE(ndc, '[^0-9]', '', 'g')
+) w ON REGEXP_REPLACE(w.ndc_normalized, '[^0-9]', '', 'g') 
+     = REGEXP_REPLACE(i.ndc, '[^0-9]', '', 'g')
 
 WHERE i.audit_id = $1
-GROUP BY i.ndc, w.total_ordered, w.total_cost
+GROUP BY i.ndc, w.total_ordered, w.total_cost, w.ndc_normalized
 ORDER BY SUM(i.quantity) DESC
   `,
   [id]
