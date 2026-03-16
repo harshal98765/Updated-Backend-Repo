@@ -4,14 +4,12 @@ import path from "path";
 import { parse } from "csv-parse/sync";
 import { normalizeInventoryCSV } from "../utils/inventoryNormalizer.js";
 
-export const createAudit = async (name) => {
+export const createAudit = async (name, userId) => {
   const result = await pool.query(
-    `
-    INSERT INTO audits (name)
-    VALUES ($1)
-    RETURNING *
-    `,
-    [name],
+    `INSERT INTO audits (name, user_id)
+     VALUES ($1, $2)
+     RETURNING *`,
+    [name, userId],
   );
 
   return result.rows[0];
@@ -34,7 +32,9 @@ const FRONT_TO_DB_KEY = {
 
 function toDbHeaderMapping(frontMapping = {}) {
   const out = {};
-  for (const [frontKey, selectedStandardHeader] of Object.entries(frontMapping)) {
+  for (const [frontKey, selectedStandardHeader] of Object.entries(
+    frontMapping,
+  )) {
     const dbKey = FRONT_TO_DB_KEY[frontKey];
     if (!dbKey) continue;
     out[dbKey] = selectedStandardHeader; // e.g. rx_number -> "rx_number"
@@ -126,43 +126,39 @@ export const saveInventoryFile = async (auditId, filename, headerMapping) => {
   // Auto-parse CSV and insert inventory rows
   const filePath = path.join(process.cwd(), "uploads/inventory", filename);
   // 1️⃣ Normalize file using frontend mapping
-const dbHeaderMapping = toDbHeaderMapping(headerMapping);
-// const normalizedPath = await normalizeInventoryCSV(filePath, dbHeaderMapping);
-console.log("Normalizing file:", filePath);
-console.log("Header mapping:", headerMapping);
+  const dbHeaderMapping = toDbHeaderMapping(headerMapping);
+  // const normalizedPath = await normalizeInventoryCSV(filePath, dbHeaderMapping);
+  console.log("Normalizing file:", filePath);
+  console.log("Header mapping:", headerMapping);
 
-let normalizedPath;
+  let normalizedPath;
 
-try {
-  normalizedPath = await normalizeInventoryCSV(
-    filePath,
-    headerMapping
-  );
-  console.log("Normalized file created:", normalizedPath);
-} catch (e) {
-  console.error("NORMALIZATION FAILED:", e);
-  throw e;
-}
+  try {
+    normalizedPath = await normalizeInventoryCSV(filePath, headerMapping);
+    console.log("Normalized file created:", normalizedPath);
+  } catch (e) {
+    console.error("NORMALIZATION FAILED:", e);
+    throw e;
+  }
 
-// 2️⃣ Read normalized file
-const normalizedContent = fs.readFileSync(normalizedPath, "utf-8");
+  // 2️⃣ Read normalized file
+  const normalizedContent = fs.readFileSync(normalizedPath, "utf-8");
 
-const records = parse(normalizedContent, {
-  columns: true,
-  skip_empty_lines: true,
-  trim: true,
-});
+  const records = parse(normalizedContent, {
+    columns: true,
+    skip_empty_lines: true,
+    trim: true,
+  });
 
-console.log("Records to insert:", records.length);
-if (records.length > 0) {
-  console.log("First record:", JSON.stringify(records[0]));
-  await insertInventoryRows(auditId, records);
-}
+  console.log("Records to insert:", records.length);
+  if (records.length > 0) {
+    console.log("First record:", JSON.stringify(records[0]));
+    await insertInventoryRows(auditId, records);
+  }
 
-await pool.query(
-  `UPDATE audits SET status = 'started' WHERE id = $1`,
-  [auditId]
-);
+  await pool.query(`UPDATE audits SET status = 'started' WHERE id = $1`, [
+    auditId,
+  ]);
   return result.rows[0];
 };
 
@@ -179,20 +175,20 @@ export const insertInventoryRows = async (auditId, rows) => {
          primary_bin, primary_paid, secondary_bin, secondary_paid, brand)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
         [
-  auditId,
-  r.ndc || null,
-  r.rx_number || null,
-  r.status || null,
-  r.date_filled || null,
-  r.drug_name || null,
-  r.quantity ? parseInt(r.quantity) : null,
-  r.package_size || null,
-  r.primary_bin || null,
-  r.primary_paid ? parseFloat(r.primary_paid) : null,
-  r.secondary_bin || null,
-  r.secondary_paid ? parseFloat(r.secondary_paid) : null,
-  r.brand || null,
-]
+          auditId,
+          r.ndc || null,
+          r.rx_number || null,
+          r.status || null,
+          r.date_filled || null,
+          r.drug_name || null,
+          r.quantity ? parseInt(r.quantity) : null,
+          r.package_size || null,
+          r.primary_bin || null,
+          r.primary_paid ? parseFloat(r.primary_paid) : null,
+          r.secondary_bin || null,
+          r.secondary_paid ? parseFloat(r.secondary_paid) : null,
+          r.brand || null,
+        ],
       );
     }
 
@@ -278,7 +274,7 @@ export const getInventoryRows = async (auditId) => {
     `SELECT * FROM inventory_rows 
      WHERE audit_id = $1 
      ORDER BY id ASC`,
-    [auditId]
+    [auditId],
   );
 
   const rows = result.rows;
@@ -324,18 +320,22 @@ export const deleteAudit = async (auditId) => {
   // 1) get filenames first
   const filesRes = await pool.query(
     `SELECT file_name FROM audit_inventory_files WHERE audit_id = $1`,
-    [auditId]
+    [auditId],
   );
 
   // 2) delete audit (cascades rows/files table rows)
   const result = await pool.query(
     `DELETE FROM audits WHERE id = $1 RETURNING *`,
-    [auditId]
+    [auditId],
   );
 
   // 3) delete physical files
   for (const row of filesRes.rows) {
-    const filePath = path.join(process.cwd(), "uploads/inventory", row.file_name);
+    const filePath = path.join(
+      process.cwd(),
+      "uploads/inventory",
+      row.file_name,
+    );
     try {
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     } catch (e) {

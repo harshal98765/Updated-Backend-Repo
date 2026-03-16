@@ -1,6 +1,8 @@
 import * as auditService from "../services/audit.service.js";
 import { pool } from "../config/db.js";
 // import { createAudit, updateAuditDates, saveInventoryFile, saveWholesalerFiles } from "../services/audit.service.js";
+import jwt from "jsonwebtoken";
+
 export const createAudit = async (req, res) => {
   try {
     const { name } = req.body;
@@ -11,7 +13,23 @@ export const createAudit = async (req, res) => {
       });
     }
 
-    const audit = await auditService.createAudit(name);
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) {
+      return res.status(401).json({ message: "Authorization header missing" });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    if (!token) {
+      return res.status(401).json({ message: "Token missing" });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    const userId = decoded.userId;
+
+    const audit = await auditService.createAudit(name, userId);
 
     res.status(201).json(audit);
   } catch (error) {
@@ -27,12 +45,12 @@ export const getFullReport = async (req, res) => {
     // DEBUG - check if rows exist at all
     const countCheck = await pool.query(
       `SELECT COUNT(*) FROM inventory_rows WHERE audit_id = $1`,
-      [id]
+      [id],
     );
     console.log("ROW COUNT FOR AUDIT:", id, countCheck.rows[0]);
 
     const result = await pool.query(
-  `
+      `
   SELECT
     ndc,
     MAX(drug_name) AS drug_name,
@@ -47,8 +65,8 @@ export const getFullReport = async (req, res) => {
   GROUP BY ndc
   ORDER BY ndc
   `,
-  [id]
-);
+      [id],
+    );
 
     console.log("REPORT ROWS:", result.rows.length);
     return res.json(result.rows);
@@ -108,10 +126,10 @@ export const uploadInventoryFile = async (req, res) => {
     }
 
     const saved = await auditService.saveInventoryFile(
-  id,
-  file.filename,
-  headerMapping
-);
+      id,
+      file.filename,
+      headerMapping,
+    );
 
     return res.status(200).json({
       message: "Inventory file uploaded successfully",
@@ -122,11 +140,11 @@ export const uploadInventoryFile = async (req, res) => {
     console.error("Upload error:", err);
     console.error("UPLOAD INVENTORY ERROR:", err);
 
-return res.status(500).json({
-  error: err.message,
-  stack: err.stack,
-  details: err?.cause || null,
-});
+    return res.status(500).json({
+      error: err.message,
+      stack: err.stack,
+      details: err?.cause || null,
+    });
   }
 };
 

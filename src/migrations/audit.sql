@@ -1,5 +1,7 @@
 -- MAIN AUDIT
 CREATE TABLE audits (
+
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     inventory_start_date DATE,
@@ -132,6 +134,22 @@ CREATE TABLE pharmacy_details (
 
     cmea_expiry DATE,
     cmea_file BYTEA,
+
+    -- NEW FIELDS
+
+    ein_number TEXT,
+    ein_file BYTEA,
+
+    liability_insurance_file BYTEA,
+    insurance_expiration DATE,
+
+    workers_comp_file BYTEA,
+    workers_comp_expiration DATE,
+
+    surety_bond_file BYTEA,
+    surety_bond_expiration DATE,
+
+    voided_cheque_file BYTEA,
 
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
