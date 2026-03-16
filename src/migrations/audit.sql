@@ -116,24 +116,7 @@ CREATE TABLE password_resets (
   token TEXT NOT NULL,
   expires_at TIMESTAMP NOT NULL
 );
-CREATE TABLE IF NOT EXISTS wholesaler_rows (
-    id BIGSERIAL PRIMARY KEY,
 
-    audit_id UUID REFERENCES audits(id) ON DELETE CASCADE,
-    wholesaler_file_id UUID REFERENCES wholesaler_files(id) ON DELETE CASCADE,
-
-    
-    ndc TEXT,
-    product_name TEXT,
-    quantity INTEGER,
-
-    unit_cost NUMERIC,
-    total_cost NUMERIC,
-
-    invoice_date DATE,
-
-    created_at TIMESTAMP DEFAULT NOW()
-);
 
 
 CREATE TABLE pharmacy_details (
