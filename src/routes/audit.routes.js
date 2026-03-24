@@ -29,7 +29,11 @@ router.patch("/:id/dates", updateAuditDates);
 router.post(
   "/:id/inventory",
   (req, res, next) => {
-    uploadInventory.single("file")(req, res, (err) => {
+    // uploadInventory.single("file")
+    uploadInventory.fields([
+      { name: "file", maxCount: 1 },
+      { name: "headerMapping", maxCount: 1 },
+    ])(req, res, (err) => {
       if (err) {
         return res.status(400).json({ error: err.message });
       }

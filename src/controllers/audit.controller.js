@@ -156,7 +156,8 @@ export const updateAuditDates = async (req, res) => {
 export const uploadInventoryFile = async (req, res) => {
   try {
     const { id } = req.params;
-    const file = req.file;
+    const file = req.files?.file?.[0];
+
     const headerMapping = req.body.headerMapping
       ? JSON.parse(req.body.headerMapping)
       : {};
@@ -223,15 +224,17 @@ export const uploadWholesalerFiles = async (req, res) => {
 
     const metadata = JSON.parse(req.body.metadata);
 
-    const filesArray = req.files.map((file) => {
-      const meta = metadata.find((m) => m.field === file.fieldname);
-      if (!meta) return null;
-      return {
-        wholesaler_name: meta.wholesaler_name,
-        file_name: file.filename,
-        headerMapping: meta.headerMapping || {},  // 👈 pass mapping through
-      };
-    }).filter(Boolean);
+    const filesArray = req.files
+      .map((file) => {
+        const meta = metadata.find((m) => m.field === file.fieldname);
+        if (!meta) return null;
+        return {
+          wholesaler_name: meta.wholesaler_name,
+          file_name: file.filename,
+          headerMapping: meta.headerMapping || {}, // 👈 pass mapping through
+        };
+      })
+      .filter(Boolean);
 
     const saved = await auditService.saveWholesalerFiles(id, filesArray);
 
@@ -249,7 +252,22 @@ export const uploadWholesalerFiles = async (req, res) => {
 
 export const getAudits = async (req, res) => {
   try {
-    const audits = await auditService.getAudits();
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) {
+      return res.status(401).json({ message: "Authorization header missing" });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    if (!token) {
+      return res.status(401).json({ message: "Token missing" });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const userId = decoded.userId;
+
+    const audits = await auditService.getAudits(userId);
     res.json(audits);
   } catch (error) {
     console.error("Get Audits Error:", error);

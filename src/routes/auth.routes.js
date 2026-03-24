@@ -1075,4 +1075,90 @@ router.post("/logout", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
+// ─────────────────────────────────────────────────────────────
+// PASTE BOTH ROUTES into auth.routes.js
+// Place them right before:  export default router;
+// ─────────────────────────────────────────────────────────────
+
+
+// ── ROUTE 1: GET /auth/users
+// Fetches all registered users for the admin dashboard list
+// ─────────────────────────────────────────────────────────────
+router.get("/users", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, name, email, phone, created_at AS "createdAt"
+       FROM users
+       ORDER BY created_at DESC`
+    );
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+// ── ROUTE 2: POST /auth/impersonate
+// Admin clicks "View as Pharmacy" → this generates a real
+// accessToken + refreshToken for that user → frontend stores
+// them and redirects directly to /Mainpage. No login needed.
+// ─────────────────────────────────────────────────────────────
+router.post("/impersonate", async (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ message: "userId is required" });
+    }
+
+    // Fetch the user
+    const result = await pool.query(
+      `SELECT id, name, email, phone, role
+       FROM users
+       WHERE id = $1`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const user = result.rows[0];
+
+    // Generate tokens exactly like normal login
+    const accessToken = jwt.sign(
+      { userId: user.id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "15m" }
+    );
+
+    const refreshToken = jwt.sign(
+      { userId: user.id },
+      process.env.JWT_REFRESH_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    // Store refresh token in DB
+    await pool.query(
+      `INSERT INTO refresh_tokens (user_id, token, expires_at)
+       VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
+      [user.id, refreshToken]
+    );
+
+    res.status(200).json({
+      accessToken,
+      refreshToken,
+      user,
+    });
+  } catch (error) {
+    console.error("Impersonation error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+// export default router;  ← your existing line, keep it
+
 export default router;

@@ -31,26 +31,20 @@ CREATE TABLE IF NOT EXISTS inventory_rows (
     drug_name TEXT,
     quantity INTEGER,
     package_size TEXT,
-
+   
     primary_bin TEXT,
     primary_paid NUMERIC,
     secondary_bin TEXT,
     secondary_paid NUMERIC,
-
+    primary_pcn TEXT,
+    primary_group TEXT,
     brand TEXT
 );
-
--- CREATE TABLE audit_wholesaler_files (
---     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
---     audit_id UUID REFERENCES audits(id) ON DELETE CASCADE,
---     wholesaler_files JSONB NOT NULL DEFAULT '[]',
---     uploaded_at TIMESTAMP DEFAULT NOW()
--- );
 
 
 CREATE TABLE wholesaler_files (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
+    
     audit_id UUID REFERENCES audits(id) ON DELETE CASCADE,
 
     wholesaler_name TEXT,
