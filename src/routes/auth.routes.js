@@ -1088,9 +1088,11 @@ router.post("/logout", async (req, res) => {
 router.get("/users", async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, name, email, phone, created_at AS "createdAt"
-       FROM users
-       ORDER BY created_at DESC`
+      `SELECT u.id, u.name, u.email, u.phone, u.created_at AS "createdAt",
+              pd.pharmacy_name AS "pharmacyName"
+       FROM users u
+       LEFT JOIN pharmacy_details pd ON u.id = pd.user_id
+       ORDER BY u.created_at DESC`
     );
     res.status(200).json(result.rows);
   } catch (error) {
