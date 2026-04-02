@@ -6,8 +6,8 @@ import { normalizeInventoryCSV } from "../utils/inventoryNormalizer.js";
 
 export const createAudit = async (name, userId) => {
   const result = await pool.query(
-    `INSERT INTO audits (name, user_id)
-     VALUES ($1, $2)
+    `INSERT INTO audits (name, user_id, status)
+     VALUES ($1, $2, 'started')
      RETURNING *`,
     [name, userId],
   );
@@ -28,6 +28,28 @@ const FRONT_TO_DB_KEY = {
   secondaryInsuranceBinNumber: "secondary_bin",
   secondaryInsurancePaid: "secondary_paid",
   brand: "brand",
+};
+
+// ── Auto-refresh audit status based on uploaded files ──────────────────────
+export const refreshAuditStatus = async (auditId) => {
+  const invCheck = await pool.query(
+    `SELECT COUNT(*) FROM audit_inventory_files WHERE audit_id = $1`,
+    [auditId]
+  );
+  const wsCheck = await pool.query(
+    `SELECT COUNT(*) FROM wholesaler_files WHERE audit_id = $1`,
+    [auditId]
+  );
+
+  const hasInventory = parseInt(invCheck.rows[0].count) > 0;
+  const hasWholesaler = parseInt(wsCheck.rows[0].count) > 0;
+
+  const newStatus = hasInventory && hasWholesaler ? 'ready' : 'started';
+
+  await pool.query(
+    `UPDATE audits SET status = $1 WHERE id = $2`,
+    [newStatus, auditId]
+  );
 };
 
 function toDbHeaderMapping(frontMapping = {}) {
@@ -108,6 +130,17 @@ export const saveInventoryFile = async (auditId, filename, headerMapping) => {
   ]);
   if (auditCheck.rows.length === 0) throw new Error("Audit not found");
 
+  // ✅ Clean old inventory data (replace behavior)
+  await pool.query(`DELETE FROM inventory_rows WHERE audit_id = $1`, [auditId]);
+  const oldInvFiles = await pool.query(
+    `SELECT file_name FROM audit_inventory_files WHERE audit_id = $1`, [auditId]
+  );
+  for (const row of oldInvFiles.rows) {
+    const oldPath = path.join(process.cwd(), "uploads/inventory", row.file_name);
+    try { if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath); } catch (e) {}
+  }
+  await pool.query(`DELETE FROM audit_inventory_files WHERE audit_id = $1`, [auditId]);
+
   const result = await pool.query(
     `
     INSERT INTO audit_inventory_files (audit_id, file_name)
@@ -144,9 +177,7 @@ export const saveInventoryFile = async (auditId, filename, headerMapping) => {
     await insertInventoryRows(auditId, records);
   }
 
-  await pool.query(`UPDATE audits SET status = 'started' WHERE id = $1`, [
-    auditId,
-  ]);
+  await refreshAuditStatus(auditId);
 
   return result.rows[0];
 };
@@ -216,6 +247,17 @@ export const saveWholesalerFiles = async (auditId, filesArray) => {
     auditId,
   ]);
   if (auditCheck.rows.length === 0) throw new Error("Audit not found");
+
+  // ✅ Clean old wholesaler data (replace behavior)
+  await pool.query(`DELETE FROM wholesaler_rows WHERE audit_id = $1`, [auditId]);
+  const oldWsFiles = await pool.query(
+    `SELECT file_name FROM wholesaler_files WHERE audit_id = $1`, [auditId]
+  );
+  for (const row of oldWsFiles.rows) {
+    const oldPath = path.join(process.cwd(), "uploads/wholesalers", row.file_name);
+    try { if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath); } catch (e) {}
+  }
+  await pool.query(`DELETE FROM wholesaler_files WHERE audit_id = $1`, [auditId]);
 
   const results = [];
 
@@ -345,6 +387,8 @@ export const saveWholesalerFiles = async (auditId, filesArray) => {
     results.push(fileInsert.rows[0]);
   }
 
+  await refreshAuditStatus(auditId);
+
   return results;
 };
 
@@ -412,26 +456,45 @@ export const getInventoryRows = async (auditId) => {
 };
 
 export const deleteAudit = async (auditId) => {
-  const filesRes = await pool.query(
+  // 1. Get all physical file names BEFORE deleting DB rows
+  const invFiles = await pool.query(
     `SELECT file_name FROM audit_inventory_files WHERE audit_id = $1`,
     [auditId],
   );
+  const wsFiles = await pool.query(
+    `SELECT file_name FROM wholesaler_files WHERE audit_id = $1`,
+    [auditId],
+  );
 
+  // 2. Delete child rows explicitly (safe even with CASCADE)
+  await pool.query(`DELETE FROM inventory_rows WHERE audit_id = $1`, [auditId]);
+  await pool.query(`DELETE FROM wholesaler_rows WHERE audit_id = $1`, [auditId]);
+  await pool.query(`DELETE FROM wholesaler_files WHERE audit_id = $1`, [auditId]);
+  await pool.query(`DELETE FROM audit_inventory_files WHERE audit_id = $1`, [auditId]);
+
+  // 3. Delete the audit itself
   const result = await pool.query(
     `DELETE FROM audits WHERE id = $1 RETURNING *`,
     [auditId],
   );
 
-  for (const row of filesRes.rows) {
-    const filePath = path.join(
-      process.cwd(),
-      "uploads/inventory",
-      row.file_name,
-    );
+  // 4. Delete physical inventory files
+  for (const row of invFiles.rows) {
+    const filePath = path.join(process.cwd(), "uploads/inventory", row.file_name);
     try {
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     } catch (e) {
-      console.warn("Failed to delete file:", filePath, e.message);
+      console.warn("Failed to delete inventory file:", filePath, e.message);
+    }
+  }
+
+  // 5. Delete physical wholesaler files
+  for (const row of wsFiles.rows) {
+    const filePath = path.join(process.cwd(), "uploads/wholesalers", row.file_name);
+    try {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch (e) {
+      console.warn("Failed to delete wholesaler file:", filePath, e.message);
     }
   }
 

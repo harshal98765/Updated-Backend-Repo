@@ -33,6 +33,9 @@ export const createAudit = async (req, res) => {
 
     res.status(201).json(audit);
   } catch (error) {
+    if (error.name === "TokenExpiredError" || error.name === "JsonWebTokenError") {
+      return res.status(401).json({ message: "Token expired or invalid" });
+    }
     console.error("Create Audit Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
@@ -66,7 +69,8 @@ export const getFullReport = async (req, res) => {
   COALESCE(SUM(CASE WHEN LOWER(pbm.pbm_name) = 'caremark' THEN i.quantity ELSE 0 END), 0) AS cvs_caremark,
   COALESCE(SUM(CASE WHEN LOWER(pbm.pbm_name) IN ('optum','optumrx') THEN i.quantity ELSE 0 END), 0) AS optumrx,
   COALESCE(SUM(CASE WHEN LOWER(pbm.pbm_name) = 'humana' THEN i.quantity ELSE 0 END), 0) AS humana,
-  COALESCE(SUM(CASE WHEN LOWER(pbm.pbm_name) = 'carelonrx' THEN i.quantity ELSE 0 END), 0) AS nj_medicaid,
+ COALESCE(SUM(CASE WHEN LOWER(pbm.pbm_name) = 'carelonrx' THEN i.quantity ELSE 0 END), 0) AS nj_medicaid,
+COALESCE(SUM(CASE WHEN LOWER(pbm.pbm_name) IN ('medicare','medicare part b','medicare part d','medicare partd') THEN i.quantity ELSE 0 END), 0) AS medicare,
   COALESCE(SUM(CASE WHEN LOWER(pbm.pbm_name) ILIKE '%southern scripts%' OR LOWER(pbm.pbm_name) ILIKE '%liviniti%' THEN i.quantity ELSE 0 END), 0) AS ssc,
   COALESCE(SUM(CASE WHEN LOWER(pbm.pbm_name) IN ('medimpact','medimpact') THEN i.quantity ELSE 0 END), 0) AS pdmi
 
@@ -92,14 +96,14 @@ LEFT JOIN LATERAL (
 
 LEFT JOIN (
   SELECT
-    REGEXP_REPLACE(ndc, '[^0-9]', '', 'g') AS ndc_normalized,
+    LPAD(REGEXP_REPLACE(ndc, '[^0-9]', '', 'g'), 11, '0') AS ndc_normalized,
     SUM(quantity) AS total_ordered,
     SUM(COALESCE(total_cost, 0)) AS total_cost
   FROM wholesaler_rows
   WHERE audit_id = $1
-  GROUP BY REGEXP_REPLACE(ndc, '[^0-9]', '', 'g')
-) w ON REGEXP_REPLACE(w.ndc_normalized, '[^0-9]', '', 'g') 
-     = REGEXP_REPLACE(i.ndc, '[^0-9]', '', 'g')
+  GROUP BY LPAD(REGEXP_REPLACE(ndc, '[^0-9]', '', 'g'), 11, '0')
+) w ON LPAD(REGEXP_REPLACE(w.ndc_normalized, '[^0-9]', '', 'g'), 11, '0')
+     = LPAD(REGEXP_REPLACE(i.ndc, '[^0-9]', '', 'g'), 11, '0')
 
 WHERE i.audit_id = $1
 GROUP BY i.ndc, w.total_ordered, w.total_cost, w.ndc_normalized
@@ -270,6 +274,9 @@ export const getAudits = async (req, res) => {
     const audits = await auditService.getAudits(userId);
     res.json(audits);
   } catch (error) {
+    if (error.name === "TokenExpiredError" || error.name === "JsonWebTokenError") {
+      return res.status(401).json({ message: "Token expired or invalid" });
+    }
     console.error("Get Audits Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
@@ -315,5 +322,33 @@ export const deleteAudit = async (req, res) => {
   } catch (error) {
     console.error("Delete Audit Error:", error);
     res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const getInventoryFiles = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+  `SELECT id, file_name FROM audit_inventory_files WHERE audit_id = $1 ORDER BY id DESC`,
+  [id]
+);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Get inventory files error:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+export const getWholesalerFiles = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+  `SELECT id, wholesaler_name, file_name FROM wholesaler_files WHERE audit_id = $1 ORDER BY id DESC`,
+  [id]
+);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Get wholesaler files error:", err);
+    res.status(500).json({ error: err.message });
   }
 };
