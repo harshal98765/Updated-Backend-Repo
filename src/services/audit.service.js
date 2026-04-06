@@ -80,16 +80,29 @@ const cleanDate = (v) => {
   if (!v) return null;
   const s = String(v).trim();
 
+  // YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
 
-  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (m) {
-    const mm = String(m[1]).padStart(2, "0");
-    const dd = String(m[2]).padStart(2, "0");
-    const yy = m[3];
-    return `${yy}-${mm}-${dd}`;
+  // MM/DD/YYYY
+  const m4 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m4) {
+    return `${m4[3]}-${String(m4[1]).padStart(2, "0")}-${String(m4[2]).padStart(2, "0")}`;
   }
 
+  // M/D/YY (2-digit year)
+  const m2 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
+  if (m2) {
+    const yr = parseInt(m2[3]) >= 50 ? `19${m2[3]}` : `20${m2[3]}`;
+    return `${yr}-${String(m2[1]).padStart(2, "0")}-${String(m2[2]).padStart(2, "0")}`;
+  }
+
+  // MM-DD-YYYY
+  const m3 = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (m3) {
+    return `${m3[3]}-${String(m3[1]).padStart(2, "0")}-${String(m3[2]).padStart(2, "0")}`;
+  }
+
+  // No fallback — reject anything that doesn't match a known date format
   return null;
 };
 
