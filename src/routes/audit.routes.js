@@ -11,8 +11,10 @@ import {
   getInventoryRows,
   deleteAudit,
   getFullReport,
+  getWholesalerDetail,
   getInventoryFiles, 
   getWholesalerFiles,
+  getInventoryDetail,
 } from "../controllers/audit.controller.js";
 
 const router = express.Router();
@@ -71,5 +73,9 @@ router.get("/:id/wholesaler-files", getWholesalerFiles);
 
 router.delete("/:id", deleteAudit);
 router.put("/:id/dates", updateAuditDates);
+
+//cells
+router.get("/:id/inventory-detail/:ndc", getInventoryDetail);
+router.get("/:id/wholesaler-detail/:ndc", getWholesalerDetail);
 
 export default router;

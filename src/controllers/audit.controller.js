@@ -352,3 +352,97 @@ export const getWholesalerFiles = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+export const getInventoryDetail = async (req, res) => {
+  try {
+    const { id, ndc } = req.params;
+
+    const result = await pool.query(
+      `SELECT
+        i.rx_number,
+        i.date_filled,
+        i.quantity,
+        'PRIMERX' AS type,
+        i.primary_bin AS pri_bin,
+        i.primary_pcn AS pri_pcn,
+        i.primary_group AS pri_group,
+        COALESCE(pbm.pbm_name, '') AS pri_insurance,
+        COALESCE(i.primary_paid, 0) AS pri_paid,
+        COALESCE(i.secondary_bin, '') AS sec_bin,
+        COALESCE(i.secondary_paid, 0) AS sec_paid
+      FROM inventory_rows i
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(
+          (SELECT STRING_AGG(DISTINCT pbm_name, ', ') FROM master_sheet m
+           WHERE UPPER(TRIM(m.bin)) = UPPER(TRIM(COALESCE(i.primary_bin,'')))
+             AND UPPER(TRIM(COALESCE(m.pcn,''))) = UPPER(TRIM(COALESCE(i.primary_pcn,'')))
+             AND UPPER(TRIM(COALESCE(m.grp,''))) = UPPER(TRIM(COALESCE(i.primary_group,'')))),
+          (SELECT STRING_AGG(DISTINCT pbm_name, ', ') FROM master_sheet m
+           WHERE UPPER(TRIM(m.bin)) = UPPER(TRIM(COALESCE(i.primary_bin,'')))
+             AND UPPER(TRIM(COALESCE(m.pcn,''))) = UPPER(TRIM(COALESCE(i.primary_pcn,'')))),
+          (SELECT STRING_AGG(DISTINCT pbm_name, ', ') FROM master_sheet m
+           WHERE UPPER(TRIM(m.bin)) = UPPER(TRIM(COALESCE(i.primary_bin,''))))
+        ) AS pbm_name
+      ) pbm ON true
+      WHERE i.audit_id = $1
+        AND LPAD(REGEXP_REPLACE(i.ndc, '[^0-9]', '', 'g'), 11, '0') = LPAD(REGEXP_REPLACE($2, '[^0-9]', '', 'g'), 11, '0')
+      ORDER BY i.date_filled ASC`,
+      [id, ndc]
+    );
+
+    return res.json(result.rows);
+  } catch (error) {
+    console.error("Inventory detail error:", error);
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+// export const getWholesalerDetail = async (req, res) => {
+//   try {
+//     const { id, ndc } = req.params;
+
+//     const result = await pool.query(
+//       `SELECT
+//         w.wholesaler_name AS type,
+//         w.invoice_date AS date_ordered,
+//         w.quantity
+//       FROM wholesaler_rows w
+//       WHERE w.audit_id = $1
+//         AND LPAD(REGEXP_REPLACE(w.ndc, '[^0-9]', '', 'g'), 11, '0') = LPAD(REGEXP_REPLACE($2, '[^0-9]', '', 'g'), 11, '0')
+//       ORDER BY w.invoice_date ASC`,
+//       [id, ndc]
+//     );
+
+//     return res.json(result.rows);
+//   } catch (error) {
+//     console.error("Wholesaler detail error:", error);
+//     return res.status(500).json({ message: error.message });
+//   }
+// };
+
+export const getWholesalerDetail = async (req, res) => {
+  try {
+    const { id, ndc } = req.params;
+
+    const result = await pool.query(
+      `SELECT *
+      FROM wholesaler_rows w
+      WHERE w.audit_id = $1
+        AND LPAD(REGEXP_REPLACE(w.ndc, '[^0-9]', '', 'g'), 11, '0') = LPAD(REGEXP_REPLACE($2, '[^0-9]', '', 'g'), 11, '0')
+      ORDER BY w.id ASC`,
+      [id, ndc]
+    );
+
+    // Map to consistent field names
+    const rows = result.rows.map(r => ({
+      type: r.wholesaler_name || r.type || 'MCKESSON',
+      date_ordered: r.invoice_date || r.date || r.order_date || r.ship_date || '',
+      quantity: r.quantity || 0,
+    }));
+
+    return res.json(rows);
+  } catch (error) {
+    console.error("Wholesaler detail error:", error);
+    return res.status(500).json({ message: error.message });
+  }
+};
