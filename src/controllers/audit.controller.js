@@ -425,8 +425,9 @@ export const getWholesalerDetail = async (req, res) => {
     const { id, ndc } = req.params;
 
     const result = await pool.query(
-      `SELECT *
+      `SELECT w.*, wf.wholesaler_name
       FROM wholesaler_rows w
+      LEFT JOIN wholesaler_files wf ON w.wholesaler_file_id = wf.id
       WHERE w.audit_id = $1
         AND LPAD(REGEXP_REPLACE(w.ndc, '[^0-9]', '', 'g'), 11, '0') = LPAD(REGEXP_REPLACE($2, '[^0-9]', '', 'g'), 11, '0')
       ORDER BY w.id ASC`,
