@@ -363,7 +363,7 @@ export const getInventoryDetail = async (req, res) => {
     const result = await pool.query(
       `SELECT
         i.rx_number,
-        i.date_filled,
+        TO_CHAR(i.date_filled, 'YYYY-MM-DD') AS date_filled,
         i.quantity,
         'PRIMERX' AS type,
         i.primary_bin AS pri_bin,

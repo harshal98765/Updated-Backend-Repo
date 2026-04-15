@@ -303,6 +303,15 @@ export const saveWholesalerFiles = async (auditId, filesArray) => {
 
     const mapping = fileObj.headerMapping || {};
     console.log("WHOLESALER MAPPING:", JSON.stringify(mapping));
+    if (records.length > 0) {
+  const testInvoice = mapping.invoiceDate ? records[0][mapping.invoiceDate] : "NO_MAPPING_KEY";
+  console.log("INVOICE DATE DEBUG:", { 
+    mappingKey: mapping.invoiceDate, 
+    rawValue: testInvoice, 
+    cleaned: mapping.invoiceDate ? cleanDate(records[0][mapping.invoiceDate]) : null,
+    csvHeaders: Object.keys(records[0])
+  });
+}
     console.log(
       "SAMPLE ROW KEYS:",
       records.length > 0 ? Object.keys(records[0]) : [],
