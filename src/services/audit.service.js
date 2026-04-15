@@ -78,7 +78,7 @@ const cleanInt = (v) => {
 
 const cleanDate = (v) => {
   if (!v) return null;
-  const s = String(v).trim();
+  const s = String(v).trim().replace(/\s+\d{1,2}:\d{2}(:\d{2})?$/, '');
 
   // YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
@@ -216,7 +216,8 @@ export const insertInventoryRows = async (auditId, rows) => {
           r.ndc || null,
           r.rx_number || null,
           r.status || null,
-          r.date_filled || null,
+          // r.date_filled || null,
+          cleanDate(r.date_filled),
           r.drug_name || null,
           r.quantity ? parseInt(r.quantity) : null,
           r.package_size || null,
