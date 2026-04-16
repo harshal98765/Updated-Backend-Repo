@@ -78,7 +78,7 @@ const cleanInt = (v) => {
 
 const cleanDate = (v) => {
   if (!v) return null;
-  const s = String(v).trim().replace(/\s+\d{1,2}:\d{2}(:\d{2})?$/, '');
+  const s = String(v).trim().replace(/\s+\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM)?$/i, '');
 
   // YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
