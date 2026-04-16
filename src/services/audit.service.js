@@ -76,33 +76,87 @@ const cleanInt = (v) => {
   return n === null ? null : Math.trunc(n);
 };
 
+// const cleanDate = (v) => {
+//   if (!v) return null;
+//   const s = String(v).trim().replace(/\s+\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM)?$/i, '');
+
+//   // YYYY-MM-DD
+//   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+//   // MM/DD/YYYY
+//   const m4 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+//   if (m4) {
+//     return `${m4[3]}-${String(m4[1]).padStart(2, "0")}-${String(m4[2]).padStart(2, "0")}`;
+//   }
+
+//   // M/D/YY (2-digit year)
+//   const m2 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
+//   if (m2) {
+//     const yr = parseInt(m2[3]) >= 50 ? `19${m2[3]}` : `20${m2[3]}`;
+//     return `${yr}-${String(m2[1]).padStart(2, "0")}-${String(m2[2]).padStart(2, "0")}`;
+//   }
+
+//   // MM-DD-YYYY
+//   const m3 = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+//   if (m3) {
+//     return `${m3[3]}-${String(m3[1]).padStart(2, "0")}-${String(m3[2]).padStart(2, "0")}`;
+//   }
+
+//   // No fallback — reject anything that doesn't match a known date format
+//   return null;
+// };
+
 const cleanDate = (v) => {
-  if (!v) return null;
-  const s = String(v).trim().replace(/\s+\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM)?$/i, '');
+  if (v === null || v === undefined || v === "") return null;
+  const s = String(v).trim();
+  if (!s) return null;
 
-  // YYYY-MM-DD
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  // ISO format YYYY-MM-DD (with or without time)
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
 
-  // MM/DD/YYYY
-  const m4 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (m4) {
-    return `${m4[3]}-${String(m4[1]).padStart(2, "0")}-${String(m4[2]).padStart(2, "0")}`;
+  // M/D/YYYY or MM/DD/YYYY
+  let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    const mm = String(m[1]).padStart(2, "0");
+    const dd = String(m[2]).padStart(2, "0");
+    return `${m[3]}-${mm}-${dd}`;
   }
 
-  // M/D/YY (2-digit year)
-  const m2 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
-  if (m2) {
-    const yr = parseInt(m2[3]) >= 50 ? `19${m2[3]}` : `20${m2[3]}`;
-    return `${yr}-${String(m2[1]).padStart(2, "0")}-${String(m2[2]).padStart(2, "0")}`;
+  // M/D/YY — 2-digit year
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
+  if (m) {
+    const mm = String(m[1]).padStart(2, "0");
+    const dd = String(m[2]).padStart(2, "0");
+    const yy = parseInt(m[3], 10);
+    const yyyy = yy >= 70 ? 1900 + yy : 2000 + yy;
+    return `${yyyy}-${mm}-${dd}`;
   }
 
-  // MM-DD-YYYY
-  const m3 = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-  if (m3) {
-    return `${m3[3]}-${String(m3[1]).padStart(2, "0")}-${String(m3[2]).padStart(2, "0")}`;
+  // M-D-YYYY or MM-DD-YYYY
+  m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (m) {
+    const mm = String(m[1]).padStart(2, "0");
+    const dd = String(m[2]).padStart(2, "0");
+    return `${m[3]}-${mm}-${dd}`;
   }
 
-  // No fallback — reject anything that doesn't match a known date format
+  // Excel serial number (pure digits, sane range: ~1927–2119)
+  if (/^\d+$/.test(s)) {
+    const serial = parseInt(s, 10);
+    if (serial >= 10000 && serial <= 80000) {
+      const utcMs = (serial - 25569) * 86400 * 1000;
+      const d = new Date(utcMs);
+      if (!isNaN(d.getTime())) {
+        const yyyy = d.getUTCFullYear();
+        const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+        const dd = String(d.getUTCDate()).padStart(2, "0");
+        return `${yyyy}-${mm}-${dd}`;
+      }
+    }
+    // Pure digits but out of Excel-serial range — reject, don't treat as year
+    return null;
+  }
+
   return null;
 };
 
