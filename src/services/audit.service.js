@@ -577,3 +577,61 @@ export const deleteAudit = async (auditId) => {
 
   return result.rows[0] || null;
 };
+
+
+export const getDrugLookup = async (auditId, ingredient) => {
+  // Parent rows — grouped by drug_name
+  const drugsRes = await pool.query(
+    `
+    SELECT
+      drug_name,
+      MAX(brand) AS brand,
+      COUNT(*)                                                   AS rx_count,
+      SUM(quantity)::numeric / NULLIF(COUNT(*), 0)               AS avg_qty_per_rx,
+      SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
+        / NULLIF(COUNT(*), 0)                                    AS avg_ins_paid_per_rx,
+      SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
+        / NULLIF(SUM(quantity), 0)                               AS avg_ins_paid_per_unit
+    FROM inventory_rows
+    WHERE audit_id = $1
+      AND UPPER(SPLIT_PART(TRIM(drug_name), ' ', 1)) = UPPER($2)
+    GROUP BY drug_name
+    ORDER BY rx_count DESC
+    `,
+    [auditId, ingredient],
+  );
+
+  // Child rows — grouped by NDC, under each drug_name
+  const ndcRes = await pool.query(
+    `
+    SELECT
+      drug_name,
+      ndc,
+      MAX(brand) AS brand,
+      COUNT(*)                                                   AS rx_count,
+      SUM(quantity)::numeric / NULLIF(COUNT(*), 0)               AS avg_qty_per_rx,
+      SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
+        / NULLIF(COUNT(*), 0)                                    AS avg_ins_paid_per_rx,
+      SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
+        / NULLIF(SUM(quantity), 0)                               AS avg_ins_paid_per_unit
+    FROM inventory_rows
+    WHERE audit_id = $1
+      AND UPPER(SPLIT_PART(TRIM(drug_name), ' ', 1)) = UPPER($2)
+    GROUP BY drug_name, ndc
+    ORDER BY drug_name, rx_count DESC
+    `,
+    [auditId, ingredient],
+  );
+
+  // Nest NDCs under their parent drug_name
+  const byDrug = new Map();
+  for (const d of drugsRes.rows) byDrug.set(d.drug_name, { ...d, ndcs: [] });
+  for (const n of ndcRes.rows) {
+    if (byDrug.has(n.drug_name)) byDrug.get(n.drug_name).ndcs.push(n);
+  }
+
+  return {
+    ingredient: ingredient.toUpperCase(),
+    drugs: Array.from(byDrug.values()),
+  };
+};

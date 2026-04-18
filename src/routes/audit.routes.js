@@ -12,9 +12,10 @@ import {
   deleteAudit,
   getFullReport,
   getWholesalerDetail,
-  getInventoryFiles, 
+  getInventoryFiles,
   getWholesalerFiles,
   getInventoryDetail,
+  getDrugLookup,
 } from "../controllers/audit.controller.js";
 
 const router = express.Router();
@@ -33,7 +34,6 @@ router.patch("/:id/dates", updateAuditDates);
 router.post(
   "/:id/inventory",
   (req, res, next) => {
-    // uploadInventory.single("file")
     uploadInventory.fields([
       { name: "file", maxCount: 1 },
       { name: "headerMapping", maxCount: 1 },
@@ -74,8 +74,12 @@ router.get("/:id/wholesaler-files", getWholesalerFiles);
 router.delete("/:id", deleteAudit);
 router.put("/:id/dates", updateAuditDates);
 
-//cells
+// ============================
+// CELL SIDEBARS
+// ============================
+
 router.get("/:id/inventory-detail/:ndc", getInventoryDetail);
 router.get("/:id/wholesaler-detail/:ndc", getWholesalerDetail);
+router.get("/:id/drug-lookup", getDrugLookup);
 
 export default router;

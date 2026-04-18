@@ -453,3 +453,16 @@ export const getWholesalerDetail = async (req, res) => {
     return res.status(500).json({ message: error.message });
   }
 };
+
+export const getDrugLookup = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { ingredient } = req.query;
+    if (!ingredient) return res.status(400).json({ error: "ingredient required" });
+    const result = await auditService.getDrugLookup(id, ingredient);
+    return res.json(result);
+  } catch (error) {
+    console.error("getDrugLookup error:", error);
+    return res.status(500).json({ message: error.message });
+  }
+};
