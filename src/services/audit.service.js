@@ -580,12 +580,20 @@ export const deleteAudit = async (auditId) => {
 
 
 export const getDrugLookup = async (auditId, ingredient) => {
-  // Parent rows — grouped by drug_name
+  // Helper: the same regex is used in SELECT and GROUP BY. It strips a trailing
+  // "(12345-1234-12)" NDC pattern from drug_name so that
+  //   "ELIQUIS 5MG TAB (00003-0894-21)"
+  //   "ELIQUIS 5MG TAB (00003-0894-70)"
+  //   "ELIQUIS 5MG TAB (00003-3764-74)"
+  // all roll up into a single "ELIQUIS 5MG TAB" parent row.
+  const CLEAN_DRUG = `TRIM(REGEXP_REPLACE(drug_name, '\\s*\\(\\d{5}-\\d{4}-\\d{2}\\)\\s*$', ''))`;
+
+  // Parent rows — grouped by cleaned drug_name (across all NDCs of that strength)
   const drugsRes = await pool.query(
     `
     SELECT
-      drug_name,
-      MAX(brand) AS brand,
+      ${CLEAN_DRUG}                                              AS drug_name,
+      MAX(brand)                                                 AS brand,
       COUNT(*)                                                   AS rx_count,
       SUM(quantity)::numeric / NULLIF(COUNT(*), 0)               AS avg_qty_per_rx,
       SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
@@ -595,19 +603,19 @@ export const getDrugLookup = async (auditId, ingredient) => {
     FROM inventory_rows
     WHERE audit_id = $1
       AND UPPER(SPLIT_PART(TRIM(drug_name), ' ', 1)) = UPPER($2)
-    GROUP BY drug_name
+    GROUP BY ${CLEAN_DRUG}
     ORDER BY rx_count DESC
     `,
     [auditId, ingredient],
   );
 
-  // Child rows — grouped by NDC, under each drug_name
+  // Child rows — grouped by cleaned drug_name + NDC
   const ndcRes = await pool.query(
     `
     SELECT
-      drug_name,
+      ${CLEAN_DRUG}                                              AS drug_name,
       ndc,
-      MAX(brand) AS brand,
+      MAX(brand)                                                 AS brand,
       COUNT(*)                                                   AS rx_count,
       SUM(quantity)::numeric / NULLIF(COUNT(*), 0)               AS avg_qty_per_rx,
       SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
@@ -617,13 +625,13 @@ export const getDrugLookup = async (auditId, ingredient) => {
     FROM inventory_rows
     WHERE audit_id = $1
       AND UPPER(SPLIT_PART(TRIM(drug_name), ' ', 1)) = UPPER($2)
-    GROUP BY drug_name, ndc
-    ORDER BY drug_name, rx_count DESC
+    GROUP BY ${CLEAN_DRUG}, ndc
+    ORDER BY ${CLEAN_DRUG}, rx_count DESC
     `,
     [auditId, ingredient],
   );
 
-  // Nest NDCs under their parent drug_name
+  // Nest NDCs under their parent (cleaned) drug_name
   const byDrug = new Map();
   for (const d of drugsRes.rows) byDrug.set(d.drug_name, { ...d, ndcs: [] });
   for (const n of ndcRes.rows) {
