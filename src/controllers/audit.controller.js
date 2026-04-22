@@ -467,3 +467,30 @@ export const getDrugLookup = async (req, res) => {
     return res.status(500).json({ message: error.message });
   }
 };
+
+export const getCommunityData = async (req, res) => {
+  try {
+    const { ndc } = req.params;
+
+    const {
+      includeGroups = "false",
+      startDate,
+      endDate,
+      mode = "state",
+      userId, // 👈 coming from frontend
+    } = req.query;
+
+    const result = await auditService.getCommunityDataGlobal(ndc, {
+      includeGroups: includeGroups === "true",
+      startDate,
+      endDate,
+      mode,
+      userId, // 👈 pass forward
+    });
+
+    return res.json(result);
+  } catch (error) {
+    console.error("Community data error:", error);
+    return res.status(500).json({ message: error.message });
+  }
+};

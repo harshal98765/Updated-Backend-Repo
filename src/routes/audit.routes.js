@@ -13,6 +13,7 @@ import {
   getFullReport,
   getWholesalerDetail,
   getInventoryFiles,
+  getCommunityData,
   getWholesalerFiles,
   getInventoryDetail,
   getDrugLookup,
@@ -80,6 +81,7 @@ router.put("/:id/dates", updateAuditDates);
 
 router.get("/:id/inventory-detail/:ndc", getInventoryDetail);
 router.get("/:id/wholesaler-detail/:ndc", getWholesalerDetail);
+router.get("/community/:ndc", getCommunityData);
 router.get("/:id/drug-lookup", getDrugLookup);
 
 export default router;
