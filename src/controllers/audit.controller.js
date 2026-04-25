@@ -494,3 +494,54 @@ export const getCommunityData = async (req, res) => {
     return res.status(500).json({ message: error.message });
   }
 };
+
+export const searchDrugNames = async (req, res) => {
+  try {
+    const { q } = req.query;
+
+    if (!q || String(q).trim().length < 2) {
+      return res.json([]);
+    }
+
+    const query = String(q).trim();
+
+    // Log the search (fire-and-forget, don't block the response)
+    auditService.logDrugSearch(query);
+
+    const results = await auditService.searchDrugNames(query, 10);
+    return res.json(results);
+  } catch (error) {
+    console.error("Drug search error:", error);
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+export const getDrugLookupGlobal = async (req, res) => {
+  try {
+    const { ingredient, bin, pcn, grp } = req.query;
+    if (!ingredient || !String(ingredient).trim()) {
+      return res.status(400).json({ error: "ingredient required" });
+    }
+
+    const ing = String(ingredient).trim();
+
+    // Log the submitted search (fire-and-forget, don't await)
+    auditService.logDrugSearch(ing);
+
+    const result = await auditService.getDrugLookupGlobal(ing, { bin, pcn, grp });
+    return res.json(result);
+  } catch (error) {
+    console.error("getDrugLookupGlobal error:", error);
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+export const getDrugLookupLanding = async (req, res) => {
+  try {
+    const result = await auditService.getDrugLookupLanding();
+    return res.json(result);
+  } catch (error) {
+    console.error("getDrugLookupLanding error:", error);
+    return res.status(500).json({ message: error.message });
+  }
+};

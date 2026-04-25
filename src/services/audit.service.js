@@ -713,3 +713,182 @@ export const getCommunityDataGlobal = async (
 
   return result.rows;
 };
+
+// ── GLOBAL DRUG SEARCH (autocomplete across all user audits) ──
+// ── GLOBAL DRUG SEARCH (autocomplete across ALL audits in the system) ──
+export const searchDrugNames = async (query, limit = 10) => {
+  const CLEAN_DRUG = `TRIM(REGEXP_REPLACE(drug_name, '\\s*\\(\\d{5}-\\d{4}-\\d{2}\\)\\s*$', ''))`;
+
+  const result = await pool.query(
+    `
+    SELECT 
+      ${CLEAN_DRUG} AS drug_name,
+      COUNT(*) AS rx_count
+    FROM inventory_rows
+    WHERE drug_name ILIKE $1
+      AND drug_name IS NOT NULL
+      AND TRIM(drug_name) != ''
+    GROUP BY ${CLEAN_DRUG}
+    ORDER BY rx_count DESC
+    LIMIT $2
+    `,
+    [`%${query}%`, limit],
+  );
+
+  return result.rows.map((r) => ({
+    name: r.drug_name,
+    rx_count: Number(r.rx_count),
+  }));
+};
+
+// ── GLOBAL DRUG LOOKUP (across ALL audits, with optional BIN/PCN/GRP filters) ──
+export const getDrugLookupGlobal = async (ingredient, filters = {}) => {
+  const { bin, pcn, grp } = filters;
+  const CLEAN_DRUG = `TRIM(REGEXP_REPLACE(drug_name, '\\s*\\(\\d{5}-\\d{4}-\\d{2}\\)\\s*$', ''))`;
+
+  // Build WHERE clause dynamically
+  const conditions = [`UPPER(SPLIT_PART(TRIM(drug_name), ' ', 1)) = UPPER($1)`];
+  const params = [ingredient];
+  let pIdx = 2;
+
+  if (bin && String(bin).trim()) {
+    // Strip leading zeros on both sides so user typing "4336" matches DB "004336"
+    conditions.push(
+      `LTRIM(UPPER(TRIM(COALESCE(primary_bin,''))),'0') = LTRIM(UPPER(TRIM($${pIdx})),'0')`
+    );
+    params.push(String(bin).trim());
+    pIdx++;
+  }
+  if (pcn && String(pcn).trim()) {
+    conditions.push(`UPPER(TRIM(COALESCE(primary_pcn,''))) = UPPER(TRIM($${pIdx}))`);
+    params.push(String(pcn).trim());
+    pIdx++;
+  }
+  if (grp && String(grp).trim()) {
+    conditions.push(`UPPER(TRIM(COALESCE(primary_group,''))) = UPPER(TRIM($${pIdx}))`);
+    params.push(String(grp).trim());
+    pIdx++;
+  }
+
+  const whereClause = conditions.join(" AND ");
+
+  // Parent rows — grouped by cleaned drug_name
+  const drugsRes = await pool.query(
+    `
+    SELECT
+      ${CLEAN_DRUG}                                              AS drug_name,
+      MAX(brand)                                                 AS brand,
+      COUNT(*)                                                   AS rx_count,
+      SUM(quantity)::numeric / NULLIF(COUNT(*), 0)               AS avg_qty_per_rx,
+      SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
+        / NULLIF(COUNT(*), 0)                                    AS avg_ins_paid_per_rx,
+      SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
+        / NULLIF(SUM(quantity), 0)                               AS avg_ins_paid_per_unit
+    FROM inventory_rows
+    WHERE ${whereClause}
+    GROUP BY ${CLEAN_DRUG}
+    ORDER BY rx_count DESC
+    `,
+    params,
+  );
+
+  // Child rows — grouped by cleaned drug_name + NDC
+  const ndcRes = await pool.query(
+    `
+    SELECT
+      ${CLEAN_DRUG}                                              AS drug_name,
+      ndc,
+      MAX(brand)                                                 AS brand,
+      COUNT(*)                                                   AS rx_count,
+      SUM(quantity)::numeric / NULLIF(COUNT(*), 0)               AS avg_qty_per_rx,
+      SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
+        / NULLIF(COUNT(*), 0)                                    AS avg_ins_paid_per_rx,
+      SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
+        / NULLIF(SUM(quantity), 0)                               AS avg_ins_paid_per_unit
+    FROM inventory_rows
+    WHERE ${whereClause}
+    GROUP BY ${CLEAN_DRUG}, ndc
+    ORDER BY ${CLEAN_DRUG}, rx_count DESC
+    `,
+    params,
+  );
+
+  const byDrug = new Map();
+  for (const d of drugsRes.rows) byDrug.set(d.drug_name, { ...d, ndcs: [] });
+  for (const n of ndcRes.rows) {
+    if (byDrug.has(n.drug_name)) byDrug.get(n.drug_name).ndcs.push(n);
+  }
+
+  return {
+    ingredient: ingredient.toUpperCase(),
+    filters: { bin: bin || null, pcn: pcn || null, grp: grp || null },
+    drugs: Array.from(byDrug.values()),
+  };
+};
+
+// ── Log a submitted search (fire-and-forget, with quality filters) ──
+export const logDrugSearch = async (query) => {
+  try {
+    const raw = String(query ?? "").trim();
+    if (!raw) return;
+
+    // Only keep the FIRST word (the ingredient) — drops "ELIQUIS 5MG TAB" → "ELIQUIS"
+    const firstWord = raw.split(/\s+/)[0];
+
+    // Reject garbage:
+    //  - too short (< 3 chars)
+    //  - contains digits or punctuation other than hyphen (rejects "E;i", "5mg")
+    //  - starts with digit
+    if (firstWord.length < 5) return;
+    if (!/^[A-Za-z][A-Za-z-]+$/.test(firstWord)) return;
+
+    // Normalize to uppercase so "Eliquis" and "eliquis" merge
+    const normalized = firstWord.toUpperCase();
+
+    await pool.query(
+      `INSERT INTO drug_search_log (query) VALUES ($1)`,
+      [normalized]
+    );
+  } catch (err) {
+    console.warn("logDrugSearch failed:", err.message);
+  }
+};
+
+// ── Landing page stats + trending (one call) ──
+export const getDrugLookupLanding = async () => {
+  const CLEAN_DRUG = `TRIM(REGEXP_REPLACE(drug_name, '\\s*\\(\\d{5}-\\d{4}-\\d{2}\\)\\s*$', ''))`;
+
+  // Run everything in parallel
+  const [statsRes, trendingRes] = await Promise.all([
+    pool.query(`
+      SELECT
+        (SELECT COUNT(DISTINCT ${CLEAN_DRUG}) FROM inventory_rows WHERE drug_name IS NOT NULL AND TRIM(drug_name) != '') AS drugs_indexed,
+        (SELECT COUNT(DISTINCT ndc) FROM inventory_rows WHERE ndc IS NOT NULL AND TRIM(ndc) != '') AS ndc_codes,
+        (SELECT COUNT(*) FROM inventory_rows) AS total_prescriptions,
+        (SELECT COUNT(DISTINCT user_id) FROM audits WHERE user_id IS NOT NULL) AS pharmacies
+    `),
+    pool.query(`
+      SELECT query, COUNT(*) AS hits
+      FROM drug_search_log
+      WHERE searched_at >= NOW() - INTERVAL '30 days'
+      GROUP BY LOWER(query), query
+      ORDER BY hits DESC
+      LIMIT 10
+    `),
+  ]);
+
+  const stats = statsRes.rows[0] || {};
+
+  return {
+    stats: {
+      drugs_indexed: Number(stats.drugs_indexed ?? 0),
+      ndc_codes: Number(stats.ndc_codes ?? 0),
+      total_prescriptions: Number(stats.total_prescriptions ?? 0),
+      pharmacies: Number(stats.pharmacies ?? 0),
+    },
+    trending: trendingRes.rows.map(r => ({
+      query: r.query,
+      hits: Number(r.hits),
+    })),
+  };
+};

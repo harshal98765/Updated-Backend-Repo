@@ -17,9 +17,21 @@ import {
   getWholesalerFiles,
   getInventoryDetail,
   getDrugLookup,
+  searchDrugNames,
+  getDrugLookupGlobal,   // ← ADD
+  getDrugLookupLanding,
 } from "../controllers/audit.controller.js";
 
 const router = express.Router();
+
+// ============================
+// ⚡ STATIC GET ROUTES FIRST (before any /:id wildcard)
+// ============================
+
+router.get("/drug-search", searchDrugNames);
+router.get("/drug-lookup-global", getDrugLookupGlobal);   // ← ADD THIS LINE
+router.get("/drug-lookup-landing", getDrugLookupLanding);
+router.get("/community/:ndc", getCommunityData);
 
 // ============================
 // CREATE & UPDATE
@@ -27,6 +39,7 @@ const router = express.Router();
 
 router.post("/", createAudit);
 router.patch("/:id/dates", updateAuditDates);
+router.put("/:id/dates", updateAuditDates);
 
 // ============================
 // INVENTORY
@@ -61,27 +74,23 @@ router.post("/:id/wholesalers", uploadWholesalers.any(), uploadWholesalerFiles);
 // ============================
 
 router.get("/", getAudits);
-router.get("/:id", getAuditById);
+
+// Specific /:id sub-routes FIRST
 router.get("/:id/inventory/rows", getInventoryRows);
 router.get("/:id/report", getFullReport);
-
 router.get("/:id/inventory-files", getInventoryFiles);
 router.get("/:id/wholesaler-files", getWholesalerFiles);
+router.get("/:id/inventory-detail/:ndc", getInventoryDetail);
+router.get("/:id/wholesaler-detail/:ndc", getWholesalerDetail);
+router.get("/:id/drug-lookup", getDrugLookup);
+
+// ⚠️ Bare /:id MUST be LAST — it's a wildcard
+router.get("/:id", getAuditById);
 
 // ============================
 // DELETE
 // ============================
 
 router.delete("/:id", deleteAudit);
-router.put("/:id/dates", updateAuditDates);
-
-// ============================
-// CELL SIDEBARS
-// ============================
-
-router.get("/:id/inventory-detail/:ndc", getInventoryDetail);
-router.get("/:id/wholesaler-detail/:ndc", getWholesalerDetail);
-router.get("/community/:ndc", getCommunityData);
-router.get("/:id/drug-lookup", getDrugLookup);
 
 export default router;
