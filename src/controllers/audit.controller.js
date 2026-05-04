@@ -170,6 +170,10 @@ export const uploadInventoryFile = async (req, res) => {
       ? JSON.parse(req.body.headerMapping)
       : {};
 
+    // FormData sends booleans as strings — parse them back
+    const excludeTransferred = req.body.excludeTransferred === "true";
+    const excludeUnbilled = req.body.excludeUnbilled === "true";
+
     if (!file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
@@ -178,12 +182,14 @@ export const uploadInventoryFile = async (req, res) => {
       id,
       file.filename,
       headerMapping,
+      { excludeTransferred, excludeUnbilled },
     );
 
     return res.status(200).json({
       message: "Inventory file uploaded successfully",
       file: saved,
       headerMapping,
+      excluded: { excludeTransferred, excludeUnbilled },
     });
   } catch (err) {
     console.error("Upload error:", err);
@@ -474,18 +480,22 @@ export const getCommunityData = async (req, res) => {
 
     const {
       includeGroups = "false",
-      startDate,
-      endDate,
       mode = "state",
-      userId, // 👈 coming from frontend
+      userId,
+      bin,
+      pcn,
+      grp,
+      range,
     } = req.query;
 
     const result = await auditService.getCommunityDataGlobal(ndc, {
       includeGroups: includeGroups === "true",
-      startDate,
-      endDate,
       mode,
-      userId, // 👈 pass forward
+      userId,
+      bin,
+      pcn,
+      grp,
+      range,
     });
 
     return res.json(result);
@@ -542,6 +552,20 @@ export const getDrugLookupLanding = async (req, res) => {
     return res.json(result);
   } catch (error) {
     console.error("getDrugLookupLanding error:", error);
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+export const searchNdcSuggestions = async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q || String(q).trim().length < 2) {
+      return res.json([]);
+    }
+    const results = await auditService.searchNdcSuggestions(String(q).trim(), 8);
+    return res.json(results);
+  } catch (error) {
+    console.error("NDC suggestions error:", error);
     return res.status(500).json({ message: error.message });
   }
 };

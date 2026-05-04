@@ -5,6 +5,7 @@ import authRoutes from "./routes/auth.routes.js";
 // add this import near your other route imports
 import adminRoutes from "./routes/admin.routes.js";
 import supplierRoutes from "./routes/supplier.routes.js"; // --- newly added supplier routes, adjust the path as needed
+import inventoryViewRoutes from "./routes/inventoryView.routes.js";
 
 const app = express();
 
@@ -24,5 +25,6 @@ app.use("/api/audits", auditRoutes);
 // add this line alongside your other app.use() calls
 app.use("/admin", adminRoutes);
 app.use("/api", supplierRoutes); //----- newly added supplier routes, adjust the base path as needed 
+app.use("/api/inventory-view", inventoryViewRoutes);
 
 export default app;

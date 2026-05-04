@@ -191,7 +191,9 @@ export const updateAuditDates = async (auditId, dates) => {
   return result.rows[0] || null;
 };
 
-export const saveInventoryFile = async (auditId, filename, headerMapping) => {
+export const saveInventoryFile = async (auditId, filename, headerMapping, options = {}) => {
+  const { excludeTransferred = false, excludeUnbilled = false } = options;
+
   const auditCheck = await pool.query("SELECT id FROM audits WHERE id = $1", [
     auditId,
   ]);
@@ -221,6 +223,7 @@ export const saveInventoryFile = async (auditId, filename, headerMapping) => {
   const dbHeaderMapping = toDbHeaderMapping(headerMapping);
   console.log("Normalizing file:", filePath);
   console.log("Header mapping:", headerMapping);
+  console.log("Exclusions:", { excludeTransferred, excludeUnbilled });
 
   let normalizedPath;
   try {
@@ -239,9 +242,23 @@ export const saveInventoryFile = async (auditId, filename, headerMapping) => {
   });
 
   console.log("Total rows parsed:", records.length);
-  if (records.length > 0) {
-    console.log("First row sample:", JSON.stringify(records[0]));
-    await insertInventoryRows(auditId, records);
+
+  // ── ✅ Apply status filters ──
+  const filteredRecords = records.filter((r) => {
+    const status = String(r.status || "").trim().toUpperCase();
+    if (excludeTransferred && status === "T") return false;
+    if (excludeUnbilled && status === "U") return false;
+    return true;
+  });
+
+  const droppedCount = records.length - filteredRecords.length;
+  console.log(
+    `After exclusions: ${filteredRecords.length} rows (dropped ${droppedCount})`,
+  );
+
+  if (filteredRecords.length > 0) {
+    console.log("First row sample:", JSON.stringify(filteredRecords[0]));
+    await insertInventoryRows(auditId, filteredRecords);
   }
 
   await refreshAuditStatus(auditId);
@@ -310,30 +327,71 @@ export const insertInventoryRows = async (auditId, rows) => {
   }
 };
 
+// audit.service.js — replace your existing saveWholesalerFiles with this one.
+// Only this function changes; everything else in audit.service.js stays the same.
+
 export const saveWholesalerFiles = async (auditId, filesArray) => {
   const auditCheck = await pool.query("SELECT id FROM audits WHERE id = $1", [
     auditId,
   ]);
   if (auditCheck.rows.length === 0) throw new Error("Audit not found");
 
-  // ✅ Clean old wholesaler data (replace behavior)
-  await pool.query(`DELETE FROM wholesaler_rows WHERE audit_id = $1`, [auditId]);
-  const oldWsFiles = await pool.query(
-    `SELECT file_name FROM wholesaler_files WHERE audit_id = $1`, [auditId]
-  );
-  for (const row of oldWsFiles.rows) {
-    const oldPath = path.join(process.cwd(), "uploads/wholesalers", row.file_name);
-    try { if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath); } catch (e) {}
-  }
-  await pool.query(`DELETE FROM wholesaler_files WHERE audit_id = $1`, [auditId]);
+  // ❌ REMOVED: the old blanket delete that wiped EVERY wholesaler file
+  //    for this audit before each upload. That destroyed previously-uploaded
+  //    files whenever the user uploaded a new batch.
+  //
+  //    await pool.query(`DELETE FROM wholesaler_rows WHERE audit_id = $1`, [auditId]);
+  //    await pool.query(`DELETE FROM wholesaler_files WHERE audit_id = $1`, [auditId]);
+  //
+  // ✅ NEW: per-wholesaler replace. Each wholesaler being uploaded clears
+  //    ONLY its own previous file/rows, leaving every other wholesaler
+  //    on this audit untouched.
 
   const results = [];
 
   for (const fileObj of filesArray) {
+    // ── Per-wholesaler cleanup (replace just this wholesaler) ──
+    const existingFiles = await pool.query(
+      `SELECT id, file_name
+         FROM wholesaler_files
+        WHERE audit_id = $1
+          AND wholesaler_name = $2`,
+      [auditId, fileObj.wholesaler_name]
+    );
+
+    for (const oldFile of existingFiles.rows) {
+      // 1) delete child rows for this specific file
+      await pool.query(
+        `DELETE FROM wholesaler_rows WHERE wholesaler_file_id = $1`,
+        [oldFile.id]
+      );
+      // 2) delete the file record
+      await pool.query(
+        `DELETE FROM wholesaler_files WHERE id = $1`,
+        [oldFile.id]
+      );
+      // 3) remove the physical file from disk
+      const oldPath = path.join(
+        process.cwd(),
+        "uploads/wholesalers",
+        oldFile.file_name
+      );
+      try {
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      } catch (e) {
+        console.warn(
+          "Failed to delete old wholesaler file:",
+          oldPath,
+          e.message
+        );
+      }
+    }
+
+    // ── Insert the new file record ──
     const fileInsert = await pool.query(
       `INSERT INTO wholesaler_files (audit_id, wholesaler_name, file_name)
        VALUES ($1, $2, $3) RETURNING *`,
-      [auditId, fileObj.wholesaler_name, fileObj.file_name],
+      [auditId, fileObj.wholesaler_name, fileObj.file_name]
     );
 
     const wholesalerFileId = fileInsert.rows[0].id;
@@ -341,10 +399,11 @@ export const saveWholesalerFiles = async (auditId, filesArray) => {
     const filePath = path.join(
       process.cwd(),
       "uploads/wholesalers",
-      fileObj.file_name,
+      fileObj.file_name
     );
     if (!fs.existsSync(filePath)) {
       console.warn("Wholesaler file not found:", filePath);
+      results.push(fileInsert.rows[0]);
       continue;
     }
 
@@ -358,21 +417,25 @@ export const saveWholesalerFiles = async (auditId, filesArray) => {
     const mapping = fileObj.headerMapping || {};
     console.log("WHOLESALER MAPPING:", JSON.stringify(mapping));
     if (records.length > 0) {
-  const testInvoice = mapping.invoiceDate ? records[0][mapping.invoiceDate] : "NO_MAPPING_KEY";
-  console.log("INVOICE DATE DEBUG:", { 
-    mappingKey: mapping.invoiceDate, 
-    rawValue: testInvoice, 
-    cleaned: mapping.invoiceDate ? cleanDate(records[0][mapping.invoiceDate]) : null,
-    csvHeaders: Object.keys(records[0])
-  });
-}
+      const testInvoice = mapping.invoiceDate
+        ? records[0][mapping.invoiceDate]
+        : "NO_MAPPING_KEY";
+      console.log("INVOICE DATE DEBUG:", {
+        mappingKey: mapping.invoiceDate,
+        rawValue: testInvoice,
+        cleaned: mapping.invoiceDate
+          ? cleanDate(records[0][mapping.invoiceDate])
+          : null,
+        csvHeaders: Object.keys(records[0]),
+      });
+    }
     console.log(
       "SAMPLE ROW KEYS:",
-      records.length > 0 ? Object.keys(records[0]) : [],
+      records.length > 0 ? Object.keys(records[0]) : []
     );
     console.log(
       "SAMPLE ROW:",
-      records.length > 0 ? JSON.stringify(records[0]) : "empty",
+      records.length > 0 ? JSON.stringify(records[0]) : "empty"
     );
 
     if (records.length === 0) {
@@ -380,8 +443,8 @@ export const saveWholesalerFiles = async (auditId, filesArray) => {
       continue;
     }
 
-    // ── BULK INSERT wholesaler rows in chunks ──
-    const CHUNK_SIZE = 1000; // 1000 rows × 8 cols = 8,000 params — safe
+    // ── BULK INSERT wholesaler rows in chunks (unchanged) ──
+    const CHUNK_SIZE = 1000;
     const client = await pool.connect();
 
     try {
@@ -394,33 +457,31 @@ export const saveWholesalerFiles = async (auditId, filesArray) => {
         const placeholders = chunk.map((row, idx) => {
           const base = idx * 8;
 
-          const ndc = mapping.ndcNumber
-            ? (row[mapping.ndcNumber] ?? null)
-            : null;
+          const ndc = mapping.ndcNumber ? row[mapping.ndcNumber] ?? null : null;
           const invoiceDate = mapping.invoiceDate
-            ? (row[mapping.invoiceDate] ?? null)
+            ? row[mapping.invoiceDate] ?? null
             : null;
           const productName = mapping.itemDescription
-            ? (row[mapping.itemDescription] ?? null)
+            ? row[mapping.itemDescription] ?? null
             : null;
           const quantity =
             mapping.quantity &&
             row[mapping.quantity] !== undefined &&
             row[mapping.quantity] !== ""
               ? parseInt(
-                  String(row[mapping.quantity]).replace(/[^0-9-]/g, ""),
+                  String(row[mapping.quantity]).replace(/[^0-9-]/g, "")
                 ) || 0
               : null;
           const unitCost =
             mapping.unitPrice && row[mapping.unitPrice]
               ? parseFloat(
-                  String(row[mapping.unitPrice]).replace(/[^0-9.]/g, ""),
+                  String(row[mapping.unitPrice]).replace(/[^0-9.]/g, "")
                 )
               : null;
           const totalCost =
             mapping.totalPrice && row[mapping.totalPrice]
               ? parseFloat(
-                  String(row[mapping.totalPrice]).replace(/[^0-9.]/g, ""),
+                  String(row[mapping.totalPrice]).replace(/[^0-9.]/g, "")
                 )
               : null;
 
@@ -432,7 +493,7 @@ export const saveWholesalerFiles = async (auditId, filesArray) => {
             quantity,
             unitCost,
             totalCost,
-            cleanDate(invoiceDate),
+            cleanDate(invoiceDate)
           );
 
           return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8})`;
@@ -440,19 +501,21 @@ export const saveWholesalerFiles = async (auditId, filesArray) => {
 
         await client.query(
           `INSERT INTO wholesaler_rows
-           (audit_id, wholesaler_file_id, ndc, product_name, quantity, unit_cost, total_cost, invoice_date)
+             (audit_id, wholesaler_file_id, ndc, product_name, quantity, unit_cost, total_cost, invoice_date)
            VALUES ${placeholders.join(",")}`,
-          values,
+          values
         );
 
         console.log(
-          `✅ Wholesaler chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${Math.ceil(records.length / CHUNK_SIZE)} inserted for ${fileObj.wholesaler_name}`,
+          `✅ Wholesaler chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${Math.ceil(
+            records.length / CHUNK_SIZE
+          )} inserted for ${fileObj.wholesaler_name}`
         );
       }
 
       await client.query("COMMIT");
       console.log(
-        `✅ All ${records.length} wholesaler rows inserted for ${fileObj.wholesaler_name}`,
+        `✅ All ${records.length} wholesaler rows inserted for ${fileObj.wholesaler_name}`
       );
     } catch (err) {
       await client.query("ROLLBACK");
@@ -646,23 +709,38 @@ export const getDrugLookup = async (auditId, ingredient) => {
 
 export const getCommunityDataGlobal = async (
   ndc,
-  { includeGroups = false, startDate, endDate, mode = "state", userId } = {},
+  {
+    includeGroups = false,
+    mode = "state",
+    userId,
+    bin,
+    pcn,
+    grp,
+    range, // "last_90_days" | "this_year" | "all_time" | undefined
+  } = {},
 ) => {
   const normalizedNdc = ndc.replace(/\D/g, "").padStart(11, "0");
 
   const groupFields = includeGroups
     ? `
-      LPAD(TRIM(i.primary_bin), 6, '0') AS bin,
-      i.primary_pcn AS pcn,
-      i.primary_group AS grp
+      LTRIM(LPAD(TRIM(i.primary_bin), 6, '0'), '0') AS bin,
+      TRIM(i.primary_pcn) AS pcn,
+      COALESCE(NULLIF(TRIM(i.primary_group), ''), 'NO_GROUP') AS grp
     `
     : `
-      LPAD(TRIM(i.primary_bin), 6, '0') AS bin,
-      i.primary_pcn AS pcn
+      LTRIM(LPAD(TRIM(i.primary_bin), 6, '0'), '0') AS bin,
+      TRIM(i.primary_pcn) AS pcn
     `;
 
-  const groupBy = includeGroups ? `bin, pcn, grp` : `bin, pcn`;
+  const groupBy = includeGroups
+    ? `LTRIM(LPAD(TRIM(i.primary_bin), 6, '0'), '0'), TRIM(i.primary_pcn), COALESCE(NULLIF(TRIM(i.primary_group), ''), 'NO_GROUP')`
+    : `LTRIM(LPAD(TRIM(i.primary_bin), 6, '0'), '0'), TRIM(i.primary_pcn)`;
 
+  let params = [normalizedNdc];
+  let paramIndex = 2;
+  let joins = "";
+
+  // ✅ NDC filter always applied
   let filters = `
     WHERE RIGHT(
       LPAD(REGEXP_REPLACE(i.ndc, '[^0-9]', '', 'g'), 11, '0'),
@@ -670,47 +748,80 @@ export const getCommunityDataGlobal = async (
     ) = RIGHT($1, 10)
   `;
 
-  let params = [normalizedNdc];
-  let paramIndex = 2;
-
-  // ✅ DATE FILTER
-  if (startDate && endDate) {
-    filters += ` AND i.date_filled BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
-    params.push(startDate, endDate);
-    paramIndex += 2;
+  // ✅ Range / timeline filter
+  if (range === "last_90_days") {
+    filters += ` AND i.date_filled >= CURRENT_DATE - INTERVAL '90 days'`;
+  } else if (range === "this_year") {
+    filters += ` AND EXTRACT(YEAR FROM i.date_filled) = EXTRACT(YEAR FROM CURRENT_DATE)`;
   }
 
-  // ✅ 🔥 USER FILTER (ONLY FOR OPPORTUNITIES)
+  // ✅ Optional bin filter (from outside or from See Group click)
+  if (bin) {
+    filters += ` 
+    AND LTRIM(LPAD(TRIM(i.primary_bin), 6, '0'), '0') 
+    = LTRIM($${paramIndex}, '0')
+  `;
+    params.push(bin.toString().trim());
+    paramIndex++;
+  }
+
+  // ✅ Optional pcn filter
+  if (pcn) {
+    filters += ` AND TRIM(i.primary_pcn) = $${paramIndex}`;
+    params.push(pcn.toString().trim());
+    paramIndex++;
+  }
+
+  // ✅ Optional group filter
+  if (grp !== undefined) {
+    const normalizedGrp = grp && grp.trim() !== "" ? grp.trim() : "NO_GROUP";
+
+    filters += ` AND COALESCE(NULLIF(TRIM(i.primary_group), ''), 'NO_GROUP') = $${paramIndex}`;
+    params.push(normalizedGrp);
+    paramIndex++;
+  }
+
+  // ✅ Always join audits for user_id access
+  joins = ` INNER JOIN audits a ON a.id = i.audit_id `;
+
+  // ✅ User filter only in opportunities mode
   if (mode === "opportunities" && userId) {
-    filters += `
-      AND i.audit_id IN (
-        SELECT id FROM audits WHERE user_id = $${paramIndex}
-      )
-    `;
+    filters += ` AND a.user_id = $${paramIndex}`;
     params.push(userId);
     paramIndex++;
   }
 
   const query = `
-  SELECT
-    ${groupFields},
-    COUNT(i.rx_number) AS estimated_rxs,
-    ROUND(AVG(
-      COALESCE(i.primary_paid,0) + COALESCE(i.secondary_paid,0)
-    )::numeric, 2) AS avg_ins_paid,
-    ROUND(
-      SUM(COALESCE(i.primary_paid,0) + COALESCE(i.secondary_paid,0))
-      / NULLIF(SUM(i.quantity),0)
-    ::numeric, 2) AS avg_ins_paid_per_unit
-    ${includeGroups ? `, ARRAY_AGG(DISTINCT i.rx_number) FILTER (WHERE i.rx_number IS NOT NULL) AS rx_numbers` : ""}
-  FROM inventory_rows i
-  ${filters}
-  GROUP BY ${groupBy}
-  ORDER BY estimated_rxs DESC
-`;
+    SELECT
+      ${groupFields},
+
+      COUNT(DISTINCT (a.user_id,i.rx_number,i.date_filled)) AS estimated_rxs,
+
+      ROUND(AVG(
+        COALESCE(i.primary_paid, 0) + COALESCE(i.secondary_paid, 0)
+      )::numeric, 2) AS avg_ins_paid,
+
+      ROUND((
+        SUM(COALESCE(i.primary_paid, 0) + COALESCE(i.secondary_paid, 0))
+        / NULLIF(SUM(i.quantity), 0)
+      )::numeric, 2) AS avg_ins_paid_per_unit
+
+      ${
+        includeGroups
+          ? `, ARRAY_AGG(DISTINCT i.rx_number)
+               FILTER (WHERE i.rx_number IS NOT NULL) AS rx_numbers`
+          : ""
+      }
+
+    FROM inventory_rows i
+    ${joins}
+    ${filters}
+
+    GROUP BY ${groupBy}
+    ORDER BY estimated_rxs DESC
+  `;
 
   const result = await pool.query(query, params);
-
   return result.rows;
 };
 
@@ -741,6 +852,45 @@ export const searchDrugNames = async (query, limit = 10) => {
   }));
 };
 
+// ── NDC AUTOCOMPLETE (search by drug name OR NDC, return both) ──
+export const searchNdcSuggestions = async (query, limit = 8) => {
+  const CLEAN_DRUG = `TRIM(REGEXP_REPLACE(drug_name, '\\s*\\(\\d{5}-\\d{4}-\\d{2}\\)\\s*$', ''))`;
+
+  // Strip non-digits from query so "00002-1495" and "000021495" both work
+  const numericOnly = query.replace(/\D/g, "");
+  const isLikelyNdc = numericOnly.length >= 3;
+
+  const result = await pool.query(
+    `
+    SELECT DISTINCT ON (ndc)
+      ndc,
+      ${CLEAN_DRUG} AS drug_name,
+      MAX(brand) AS brand,
+      MAX(package_size) AS package_size,
+      COUNT(*) OVER (PARTITION BY ndc) AS rx_count
+    FROM inventory_rows
+    WHERE ndc IS NOT NULL
+      AND TRIM(ndc) != ''
+      AND (
+        drug_name ILIKE $1
+        OR REGEXP_REPLACE(ndc, '[^0-9]', '', 'g') ILIKE $2
+      )
+    GROUP BY ndc, ${CLEAN_DRUG}
+    ORDER BY ndc, rx_count DESC
+    LIMIT $3
+    `,
+    [`%${query}%`, `%${numericOnly}%`, limit],
+  );
+
+  return result.rows.map((r) => ({
+    ndc: r.ndc,
+    drug_name: r.drug_name,
+    brand: r.brand || null,
+    package_size: r.package_size || null,
+    rx_count: Number(r.rx_count),
+  }));
+};
+
 // ── GLOBAL DRUG LOOKUP (across ALL audits, with optional BIN/PCN/GRP filters) ──
 export const getDrugLookupGlobal = async (ingredient, filters = {}) => {
   const { bin, pcn, grp } = filters;
@@ -754,18 +904,22 @@ export const getDrugLookupGlobal = async (ingredient, filters = {}) => {
   if (bin && String(bin).trim()) {
     // Strip leading zeros on both sides so user typing "4336" matches DB "004336"
     conditions.push(
-      `LTRIM(UPPER(TRIM(COALESCE(primary_bin,''))),'0') = LTRIM(UPPER(TRIM($${pIdx})),'0')`
+      `LTRIM(UPPER(TRIM(COALESCE(primary_bin,''))),'0') = LTRIM(UPPER(TRIM($${pIdx})),'0')`,
     );
     params.push(String(bin).trim());
     pIdx++;
   }
   if (pcn && String(pcn).trim()) {
-    conditions.push(`UPPER(TRIM(COALESCE(primary_pcn,''))) = UPPER(TRIM($${pIdx}))`);
+    conditions.push(
+      `UPPER(TRIM(COALESCE(primary_pcn,''))) = UPPER(TRIM($${pIdx}))`,
+    );
     params.push(String(pcn).trim());
     pIdx++;
   }
   if (grp && String(grp).trim()) {
-    conditions.push(`UPPER(TRIM(COALESCE(primary_group,''))) = UPPER(TRIM($${pIdx}))`);
+    conditions.push(
+      `UPPER(COALESCE(NULLIF(TRIM(primary_group), ''), 'NO_GROUP')) = UPPER(TRIM($${pIdx}))`,
+    );
     params.push(String(grp).trim());
     pIdx++;
   }
@@ -778,14 +932,15 @@ export const getDrugLookupGlobal = async (ingredient, filters = {}) => {
     SELECT
       ${CLEAN_DRUG}                                              AS drug_name,
       MAX(brand)                                                 AS brand,
-      COUNT(*)                                                   AS rx_count,
+      COUNT(DISTINCT (a.user_id,rx_number,date_filled))                                AS rx_count,
       SUM(quantity)::numeric / NULLIF(COUNT(*), 0)               AS avg_qty_per_rx,
       SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
         / NULLIF(COUNT(*), 0)                                    AS avg_ins_paid_per_rx,
       SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
         / NULLIF(SUM(quantity), 0)                               AS avg_ins_paid_per_unit
     FROM inventory_rows
-    WHERE ${whereClause}
+INNER JOIN audits a ON a.id = inventory_rows.audit_id
+WHERE ${whereClause}
     GROUP BY ${CLEAN_DRUG}
     ORDER BY rx_count DESC
     `,
@@ -797,17 +952,18 @@ export const getDrugLookupGlobal = async (ingredient, filters = {}) => {
     `
     SELECT
       ${CLEAN_DRUG}                                              AS drug_name,
-      ndc,
+      RIGHT(LPAD(REGEXP_REPLACE(ndc, '[^0-9]', '', 'g'), 11, '0'), 10) AS ndc,
       MAX(brand)                                                 AS brand,
-      COUNT(*)                                                   AS rx_count,
+      COUNT(DISTINCT (a.user_id,rx_number,date_filled))                                                   AS rx_count,
       SUM(quantity)::numeric / NULLIF(COUNT(*), 0)               AS avg_qty_per_rx,
       SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
         / NULLIF(COUNT(*), 0)                                    AS avg_ins_paid_per_rx,
       SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
         / NULLIF(SUM(quantity), 0)                               AS avg_ins_paid_per_unit
     FROM inventory_rows
-    WHERE ${whereClause}
-    GROUP BY ${CLEAN_DRUG}, ndc
+INNER JOIN audits a ON a.id = inventory_rows.audit_id
+WHERE ${whereClause}
+    GROUP BY ${CLEAN_DRUG}, RIGHT(LPAD(REGEXP_REPLACE(ndc, '[^0-9]', '', 'g'), 11, '0'), 10)
     ORDER BY ${CLEAN_DRUG}, rx_count DESC
     `,
     params,
@@ -861,12 +1017,12 @@ export const getDrugLookupLanding = async () => {
   // Run everything in parallel
   const [statsRes, trendingRes] = await Promise.all([
     pool.query(`
-      SELECT
-        (SELECT COUNT(DISTINCT ${CLEAN_DRUG}) FROM inventory_rows WHERE drug_name IS NOT NULL AND TRIM(drug_name) != '') AS drugs_indexed,
-        (SELECT COUNT(DISTINCT ndc) FROM inventory_rows WHERE ndc IS NOT NULL AND TRIM(ndc) != '') AS ndc_codes,
-        (SELECT COUNT(*) FROM inventory_rows) AS total_prescriptions,
-        (SELECT COUNT(DISTINCT user_id) FROM audits WHERE user_id IS NOT NULL) AS pharmacies
-    `),
+  SELECT
+    (SELECT COUNT(DISTINCT ${CLEAN_DRUG}) FROM inventory_rows WHERE drug_name IS NOT NULL AND TRIM(drug_name) != '') AS drugs_indexed,
+    (SELECT COUNT(DISTINCT ndc) FROM inventory_rows WHERE ndc IS NOT NULL AND TRIM(ndc) != '') AS ndc_codes,
+    (SELECT COUNT(*) FROM inventory_rows) AS total_prescriptions,
+    (SELECT COUNT(DISTINCT rx_number) FROM inventory_rows WHERE rx_number IS NOT NULL AND TRIM(rx_number) != '') AS unique_rx
+`),
     pool.query(`
       SELECT query, COUNT(*) AS hits
       FROM drug_search_log
@@ -884,7 +1040,7 @@ export const getDrugLookupLanding = async () => {
       drugs_indexed: Number(stats.drugs_indexed ?? 0),
       ndc_codes: Number(stats.ndc_codes ?? 0),
       total_prescriptions: Number(stats.total_prescriptions ?? 0),
-      pharmacies: Number(stats.pharmacies ?? 0),
+      unique_rx: Number(stats.unique_rx ?? 0),
     },
     trending: trendingRes.rows.map(r => ({
       query: r.query,
