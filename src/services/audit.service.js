@@ -854,41 +854,49 @@ export const searchDrugNames = async (query, limit = 10) => {
 
 // ── NDC AUTOCOMPLETE (search by drug name OR NDC, return both) ──
 export const searchNdcSuggestions = async (query, limit = 8) => {
-  const CLEAN_DRUG = `TRIM(REGEXP_REPLACE(drug_name, '\\s*\\(\\d{5}-\\d{4}-\\d{2}\\)\\s*$', ''))`;
+  const q = String(query ?? "").trim();
+  if (q.length < 2) return [];
 
-  // Strip non-digits from query so "00002-1495" and "000021495" both work
-  const numericOnly = query.replace(/\D/g, "");
-  const isLikelyNdc = numericOnly.length >= 3;
+  const numericOnly = q.replace(/\D/g, "");
+  const ndcPattern = numericOnly.length >= 3 ? `%${numericOnly}%` : null;
 
-  const result = await pool.query(
-    `
-    SELECT DISTINCT ON (ndc)
-      ndc,
-      ${CLEAN_DRUG} AS drug_name,
-      MAX(brand) AS brand,
-      MAX(package_size) AS package_size,
-      COUNT(*) OVER (PARTITION BY ndc) AS rx_count
-    FROM inventory_rows
-    WHERE ndc IS NOT NULL
-      AND TRIM(ndc) != ''
-      AND (
-        drug_name ILIKE $1
-        OR REGEXP_REPLACE(ndc, '[^0-9]', '', 'g') ILIKE $2
-      )
-    GROUP BY ndc, ${CLEAN_DRUG}
-    ORDER BY ndc, rx_count DESC
-    LIMIT $3
-    `,
-    [`%${query}%`, `%${numericOnly}%`, limit],
-  );
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        ndc,
+        MAX(drug_name)    AS drug_name,
+        MAX(brand)        AS brand,
+        MAX(package_size) AS package_size,
+        COUNT(*)          AS rx_count
+      FROM inventory_rows
+      WHERE ndc IS NOT NULL
+        AND TRIM(ndc) <> ''
+        AND (
+          drug_name ILIKE $1
+          OR ($2::text IS NOT NULL AND REGEXP_REPLACE(ndc, '[^0-9]', '', 'g') ILIKE $2)
+        )
+      GROUP BY ndc
+      ORDER BY rx_count DESC
+      LIMIT $3
+      `,
+      [`%${q}%`, ndcPattern, limit]
+    );
 
-  return result.rows.map((r) => ({
-    ndc: r.ndc,
-    drug_name: r.drug_name,
-    brand: r.brand || null,
-    package_size: r.package_size || null,
-    rx_count: Number(r.rx_count),
-  }));
+    return result.rows.map((r) => ({
+      ndc: r.ndc,
+      drug_name: r.drug_name,
+      brand: r.brand || null,
+      package_size: r.package_size || null,
+      rx_count: Number(r.rx_count),
+    }));
+  } catch (err) {
+    // Log only safe scalar fields — never `err` itself (pg attaches the socket)
+    const msg = String(err?.message || "").slice(0, 300);
+    const code = err?.code || "";
+    console.error("searchNdcSuggestions SQL error | code:", code, "| msg:", msg);
+    throw new Error(msg || "NDC suggestion query failed");
+  }
 };
 
 // ── GLOBAL DRUG LOOKUP (across ALL audits, with optional BIN/PCN/GRP filters) ──

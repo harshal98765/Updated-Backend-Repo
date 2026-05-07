@@ -814,16 +814,31 @@ export const getDrugLookupLanding = async (req, res) => {
   }
 };
 
+// export const searchNdcSuggestions = async (req, res) => {
+//   try {
+//     const { q } = req.query;
+//     if (!q || String(q).trim().length < 2) {
+//       return res.json([]);
+//     }
+//     const results = await auditService.searchNdcSuggestions(String(q).trim(), 8);
+//     return res.json(results);
+//   } catch (error) {
+//     console.error("NDC suggestions error:", error);
+//     return res.status(500).json({ message: error.message });
+//   }
+// };
+
 export const searchNdcSuggestions = async (req, res) => {
   try {
     const { q } = req.query;
-    if (!q || String(q).trim().length < 2) {
-      return res.json([]);
-    }
+    if (!q || String(q).trim().length < 2) return res.json([]);
     const results = await auditService.searchNdcSuggestions(String(q).trim(), 8);
     return res.json(results);
-  } catch (error) {
-    console.error("NDC suggestions error:", error);
-    return res.status(500).json({ message: error.message });
+  } catch (err) {
+    // Only log/send safe scalar fields — never the raw error (it has the pg socket attached)
+    const msg = err && err.message ? String(err.message).slice(0, 500) : "Failed to fetch NDC suggestions";
+    const code = err && err.code ? String(err.code) : "";
+    console.error("NDC suggestions error:", code, msg);
+    return res.status(500).json({ error: msg });
   }
 };
