@@ -26,6 +26,8 @@ const FRONT_TO_DB_KEY = {
   primaryInsuranceBinNumber: "primary_bin",
   primaryInsurancePaid: "primary_paid",
   secondaryInsuranceBinNumber: "secondary_bin",
+  secondaryInsurancePcn: "secondary_pcn",
+  secondaryInsuranceGroup: "secondary_group",
   secondaryInsurancePaid: "secondary_paid",
   brand: "brand",
 };
@@ -76,73 +78,112 @@ const cleanInt = (v) => {
   return n === null ? null : Math.trunc(n);
 };
 
+
 // const cleanDate = (v) => {
-//   if (!v) return null;
-//   const s = String(v).trim().replace(/\s+\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM)?$/i, '');
+//   if (v === null || v === undefined || v === "") return null;
+//   const s = String(v).trim();
+//   if (!s) return null;
 
-//   // YYYY-MM-DD
-//   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+//   // ISO format YYYY-MM-DD (with or without time)
+//   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
 
-//   // MM/DD/YYYY
-//   const m4 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-//   if (m4) {
-//     return `${m4[3]}-${String(m4[1]).padStart(2, "0")}-${String(m4[2]).padStart(2, "0")}`;
+//   // M/D/YYYY or MM/DD/YYYY
+//   let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+//   if (m) {
+//     const mm = String(m[1]).padStart(2, "0");
+//     const dd = String(m[2]).padStart(2, "0");
+//     return `${m[3]}-${mm}-${dd}`;
 //   }
 
-//   // M/D/YY (2-digit year)
-//   const m2 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
-//   if (m2) {
-//     const yr = parseInt(m2[3]) >= 50 ? `19${m2[3]}` : `20${m2[3]}`;
-//     return `${yr}-${String(m2[1]).padStart(2, "0")}-${String(m2[2]).padStart(2, "0")}`;
+//   // M/D/YY — 2-digit year
+//   m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
+//   if (m) {
+//     const mm = String(m[1]).padStart(2, "0");
+//     const dd = String(m[2]).padStart(2, "0");
+//     const yy = parseInt(m[3], 10);
+//     const yyyy = yy >= 70 ? 1900 + yy : 2000 + yy;
+//     return `${yyyy}-${mm}-${dd}`;
 //   }
 
-//   // MM-DD-YYYY
-//   const m3 = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-//   if (m3) {
-//     return `${m3[3]}-${String(m3[1]).padStart(2, "0")}-${String(m3[2]).padStart(2, "0")}`;
+//   // M-D-YYYY or MM-DD-YYYY
+//   m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+//   if (m) {
+//     const mm = String(m[1]).padStart(2, "0");
+//     const dd = String(m[2]).padStart(2, "0");
+//     return `${m[3]}-${mm}-${dd}`;
 //   }
 
-//   // No fallback — reject anything that doesn't match a known date format
+//   // Excel serial number (pure digits, sane range: ~1927–2119)
+//   if (/^\d+$/.test(s)) {
+//     const serial = parseInt(s, 10);
+//     if (serial >= 10000 && serial <= 80000) {
+//       const utcMs = (serial - 25569) * 86400 * 1000;
+//       const d = new Date(utcMs);
+//       if (!isNaN(d.getTime())) {
+//         const yyyy = d.getUTCFullYear();
+//         const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+//         const dd = String(d.getUTCDate()).padStart(2, "0");
+//         return `${yyyy}-${mm}-${dd}`;
+//       }
+//     }
+//     // Pure digits but out of Excel-serial range — reject, don't treat as year
+//     return null;
+//   }
+
 //   return null;
 // };
 
 const cleanDate = (v) => {
   if (v === null || v === undefined || v === "") return null;
-  const s = String(v).trim();
+  let s = String(v).trim();
   if (!s) return null;
 
-  // ISO format YYYY-MM-DD (with or without time)
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  // ── Strip trailing time component, ALL common variants ──
+  //   "3/15/2025 10:30"
+  //   "3/15/2025 10:30:00"
+  //   "3/15/2025 10:30 AM"
+  //   "3/15/2025 10:30:00 PM"
+  //   "3/15/2025 0:00"
+  //   "2025-03-15T10:30:00.000Z"
+  //   "2025-03-15 10:30:00"
+  s = s
+    .replace(/[T\s]+\d{1,2}:\d{2}(:\d{2})?(\.\d+)?\s*(Z|[AP]M)?$/i, "")
+    .trim();
 
-  // M/D/YYYY or MM/DD/YYYY
+  // ── ISO YYYY-MM-DD ──
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+  // ── M/D/YYYY or MM/DD/YYYY ──
   let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (m) {
-    const mm = String(m[1]).padStart(2, "0");
-    const dd = String(m[2]).padStart(2, "0");
-    return `${m[3]}-${mm}-${dd}`;
+    return `${m[3]}-${String(m[1]).padStart(2, "0")}-${String(m[2]).padStart(2, "0")}`;
   }
 
-  // M/D/YY — 2-digit year
+  // ── M/D/YY (2-digit year) ──
   m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
   if (m) {
-    const mm = String(m[1]).padStart(2, "0");
-    const dd = String(m[2]).padStart(2, "0");
     const yy = parseInt(m[3], 10);
     const yyyy = yy >= 70 ? 1900 + yy : 2000 + yy;
-    return `${yyyy}-${mm}-${dd}`;
+    return `${yyyy}-${String(m[1]).padStart(2, "0")}-${String(m[2]).padStart(2, "0")}`;
   }
 
-  // M-D-YYYY or MM-DD-YYYY
+  // ── M-D-YYYY or MM-DD-YYYY ──
   m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
   if (m) {
-    const mm = String(m[1]).padStart(2, "0");
-    const dd = String(m[2]).padStart(2, "0");
-    return `${m[3]}-${mm}-${dd}`;
+    return `${m[3]}-${String(m[1]).padStart(2, "0")}-${String(m[2]).padStart(2, "0")}`;
   }
 
-  // Excel serial number (pure digits, sane range: ~1927–2119)
-  if (/^\d+$/.test(s)) {
-    const serial = parseInt(s, 10);
+  // ── M-D-YY (2-digit year, dash separator) ──
+  m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{2})$/);
+  if (m) {
+    const yy = parseInt(m[3], 10);
+    const yyyy = yy >= 70 ? 1900 + yy : 2000 + yy;
+    return `${yyyy}-${String(m[1]).padStart(2, "0")}-${String(m[2]).padStart(2, "0")}`;
+  }
+
+  // ── Excel serial number ──
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    const serial = parseFloat(s);
     if (serial >= 10000 && serial <= 80000) {
       const utcMs = (serial - 25569) * 86400 * 1000;
       const d = new Date(utcMs);
@@ -153,10 +194,22 @@ const cleanDate = (v) => {
         return `${yyyy}-${mm}-${dd}`;
       }
     }
-    // Pure digits but out of Excel-serial range — reject, don't treat as year
     return null;
   }
 
+  // ── Last-resort fallback: let JS try to parse it ──
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) {
+    const yyyy = parsed.getFullYear();
+    const mm = String(parsed.getMonth() + 1).padStart(2, "0");
+    const dd = String(parsed.getDate()).padStart(2, "0");
+    if (yyyy >= 1900 && yyyy <= 2100) {
+      return `${yyyy}-${mm}-${dd}`;
+    }
+  }
+
+  // ── Log what we rejected so we can see future problem formats ──
+  console.warn("cleanDate rejected value:", JSON.stringify(v));
   return null;
 };
 
@@ -271,7 +324,7 @@ export const insertInventoryRows = async (auditId, rows) => {
   if (!rows.length) return { inserted: 0 };
 
   const client = await pool.connect();
-  const CHUNK_SIZE = 1000; // 1000 rows × 15 cols = 15,000 params — safe
+  const CHUNK_SIZE = 1000; // 1000 rows × 17 cols = 17,000 params — safe
 
   try {
     await client.query("BEGIN");
@@ -281,7 +334,7 @@ export const insertInventoryRows = async (auditId, rows) => {
       const values = [];
 
       const placeholders = chunk.map((r, idx) => {
-        const base = idx * 15;
+        const base = idx * 17;
         values.push(
           auditId,
           r.ndc || null,
@@ -297,16 +350,19 @@ export const insertInventoryRows = async (auditId, rows) => {
           r.primary_group || null,
           r.primary_paid ? parseFloat(r.primary_paid) : null,
           r.secondary_bin || null,
+          r.secondary_pcn || null,
+          r.secondary_group || null,
           r.secondary_paid ? parseFloat(r.secondary_paid) : null,
           r.brand || null,
         );
-        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15})`;
+        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17})`;
       });
 
       await client.query(
         `INSERT INTO inventory_rows
          (audit_id, ndc, rx_number, status, date_filled, drug_name, quantity, package_size,
-          primary_bin, primary_pcn, primary_group, primary_paid, secondary_bin, secondary_paid, brand)
+          primary_bin, primary_pcn, primary_group, primary_paid,
+          secondary_bin, secondary_pcn, secondary_group, secondary_paid, brand)
          VALUES ${placeholders.join(",")}`,
         values,
       );

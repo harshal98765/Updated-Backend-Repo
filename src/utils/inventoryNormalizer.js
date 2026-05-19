@@ -17,6 +17,8 @@ const FRONT_TO_DB = {
   primaryInsuranceGroup: "primary_group",
   primaryInsurancePaid: "primary_paid",
   secondaryInsuranceBinNumber: "secondary_bin",
+  secondaryInsurancePcn: "secondary_pcn",
+  secondaryInsuranceGroup: "secondary_group",
   secondaryInsurancePaid: "secondary_paid",
   brand: "brand",
 };

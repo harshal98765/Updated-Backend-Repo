@@ -18,9 +18,10 @@ import {
   getInventoryDetail,
   getDrugLookup,
   searchDrugNames,
-  getDrugLookupGlobal,   // ← ADD
+  getDrugLookupGlobal,
   getDrugLookupLanding,
-  searchNdcSuggestions
+  searchNdcSuggestions,
+  getAberrantRiskSummary,
 } from "../controllers/audit.controller.js";
 
 const router = express.Router();
@@ -85,6 +86,7 @@ router.get("/:id/wholesaler-files", getWholesalerFiles);
 router.get("/:id/inventory-detail/:ndc", getInventoryDetail);
 router.get("/:id/wholesaler-detail/:ndc", getWholesalerDetail);
 router.get("/:id/drug-lookup", getDrugLookup);
+router.get("/:id/aberrant-summary", getAberrantRiskSummary);
 
 // ⚠️ Bare /:id MUST be LAST — it's a wildcard
 router.get("/:id", getAuditById);
