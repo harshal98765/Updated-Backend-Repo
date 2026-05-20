@@ -30,6 +30,7 @@ const FRONT_TO_DB_KEY = {
   secondaryInsuranceGroup: "secondary_group",
   secondaryInsurancePaid: "secondary_paid",
   brand: "brand",
+  patientCopay: "patient_copay",
 };
 
 // ── Auto-refresh audit status based on uploaded files ──────────────────────
@@ -324,7 +325,7 @@ export const insertInventoryRows = async (auditId, rows) => {
   if (!rows.length) return { inserted: 0 };
 
   const client = await pool.connect();
-  const CHUNK_SIZE = 1000; // 1000 rows × 17 cols = 17,000 params — safe
+  const CHUNK_SIZE = 1000; // 1000 rows × 18 cols = 18,000 params — safe
 
   try {
     await client.query("BEGIN");
@@ -334,7 +335,7 @@ export const insertInventoryRows = async (auditId, rows) => {
       const values = [];
 
       const placeholders = chunk.map((r, idx) => {
-        const base = idx * 17;
+        const base = idx * 18;
         values.push(
           auditId,
           r.ndc || null,
@@ -354,15 +355,16 @@ export const insertInventoryRows = async (auditId, rows) => {
           r.secondary_group || null,
           r.secondary_paid ? parseFloat(r.secondary_paid) : null,
           r.brand || null,
+          r.patient_copay ? parseFloat(r.patient_copay) : null,
         );
-        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17})`;
+        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17},$${base + 18})`;
       });
 
       await client.query(
         `INSERT INTO inventory_rows
          (audit_id, ndc, rx_number, status, date_filled, drug_name, quantity, package_size,
           primary_bin, primary_pcn, primary_group, primary_paid,
-          secondary_bin, secondary_pcn, secondary_group, secondary_paid, brand)
+          secondary_bin, secondary_pcn, secondary_group, secondary_paid, brand, patient_copay)
          VALUES ${placeholders.join(",")}`,
         values,
       );
@@ -638,6 +640,7 @@ export const getInventoryRows = async (auditId) => {
     "secondary_bin",
     "secondary_paid",
     "brand",
+    "patient_copay",
   ];
 
   const normalized = rows.map((row) => {

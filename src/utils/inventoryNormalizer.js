@@ -21,6 +21,7 @@ const FRONT_TO_DB = {
   secondaryInsuranceGroup: "secondary_group",
   secondaryInsurancePaid: "secondary_paid",
   brand: "brand",
+  patientCopay: "patient_copay",
 };
 
 export async function normalizeInventoryCSV(inputPath, headerMapping) {
