@@ -184,7 +184,23 @@ export const getFullReport = async (req, res) => {
                               OR i.date_filled BETWEEN a.inventory_start_date AND a.inventory_end_date
                             THEN i.rx_number END) AS claims_count,
 
-        BOOL_OR(ab.ndc IS NOT NULL) AS is_aberrant
+        BOOL_OR(ab.ndc IS NOT NULL AND UPPER(TRIM(COALESCE(pbm.pbm_name, ''))) LIKE '%CAREMARK%') AS is_aberrant,
+
+        COUNT(DISTINCT CASE
+          WHEN ab.ndc IS NOT NULL
+            AND UPPER(TRIM(COALESCE(pbm.pbm_name, ''))) LIKE '%CAREMARK%'
+            AND (i.date_filled IS NULL
+                 OR (a.inventory_start_date IS NULL AND a.inventory_end_date IS NULL)
+                 OR i.date_filled BETWEEN a.inventory_start_date AND a.inventory_end_date)
+          THEN i.rx_number END) AS aberrant_caremark_claims,
+
+        SUM(CASE
+          WHEN ab.ndc IS NOT NULL
+            AND UPPER(TRIM(COALESCE(pbm.pbm_name, ''))) LIKE '%CAREMARK%'
+            AND (i.date_filled IS NULL
+                 OR (a.inventory_start_date IS NULL AND a.inventory_end_date IS NULL)
+                 OR i.date_filled BETWEEN a.inventory_start_date AND a.inventory_end_date)
+          THEN COALESCE(i.primary_paid, 0) + COALESCE(i.secondary_paid, 0) ELSE 0 END) AS aberrant_caremark_amount
 
       FROM inventory_rows i
       CROSS JOIN a
@@ -237,11 +253,20 @@ export const getAberrantRiskSummary = async (req, res) => {
     const { id } = req.params;
     const { month } = req.query; // format: "YYYY-MM"
 
+    const caremarkBinsCte = `
+      caremark_bins AS (
+        SELECT DISTINCT LTRIM(UPPER(TRIM(bin)), '0') AS bin_norm
+        FROM master_sheet
+        WHERE UPPER(TRIM(pbm_name)) LIKE '%CAREMARK%'
+      )`;
+
     const summaryCte = `
-      WITH filtered AS (
+      WITH ${caremarkBinsCte},
+      filtered AS (
         SELECT
           i.rx_number,
           i.ndc,
+          LTRIM(UPPER(TRIM(COALESCE(i.primary_bin, ''))), '0') AS bin_norm,
           COALESCE(i.primary_paid, 0) + COALESCE(i.secondary_paid, 0) AS amount
         FROM inventory_rows i
         WHERE i.audit_id = $1
@@ -250,11 +275,13 @@ export const getAberrantRiskSummary = async (req, res) => {
       )`;
 
     const ndcCte = `
-      WITH filtered AS (
+      WITH ${caremarkBinsCte},
+      filtered AS (
         SELECT
           i.rx_number,
           i.ndc,
           i.quantity,
+          LTRIM(UPPER(TRIM(COALESCE(i.primary_bin, ''))), '0') AS bin_norm,
           COALESCE(i.primary_paid, 0) + COALESCE(i.secondary_paid, 0) AS amount
         FROM inventory_rows i
         WHERE i.audit_id = $1
@@ -276,13 +303,14 @@ export const getAberrantRiskSummary = async (req, res) => {
       pool.query(
         `${summaryCte}
         SELECT
-          COUNT(DISTINCT f.rx_number)                                                   AS total_claims,
-          COALESCE(SUM(f.amount), 0)                                                    AS total_amount,
-          COUNT(DISTINCT CASE WHEN ab.ndc IS NOT NULL THEN f.rx_number END)             AS aberrant_claims,
-          COALESCE(SUM(CASE WHEN ab.ndc IS NOT NULL THEN f.amount ELSE 0 END), 0)       AS aberrant_amount
+          COUNT(DISTINCT f.rx_number)                                                                     AS total_claims,
+          COALESCE(SUM(f.amount), 0)                                                                      AS total_amount,
+          COUNT(DISTINCT CASE WHEN ab.ndc IS NOT NULL AND cb.bin_norm IS NOT NULL THEN f.rx_number END)   AS aberrant_claims,
+          COALESCE(SUM(CASE WHEN ab.ndc IS NOT NULL AND cb.bin_norm IS NOT NULL THEN f.amount ELSE 0 END), 0) AS aberrant_amount
         FROM filtered f
         LEFT JOIN aberrant_ndcs ab
-          ON ab.ndc = LPAD(REGEXP_REPLACE(f.ndc, '[^0-9]', '', 'g'), 11, '0')`,
+          ON ab.ndc = LPAD(REGEXP_REPLACE(f.ndc, '[^0-9]', '', 'g'), 11, '0')
+        LEFT JOIN caremark_bins cb ON cb.bin_norm = f.bin_norm`,
         [id, month],
       ),
       pool.query(
@@ -297,6 +325,7 @@ export const getAberrantRiskSummary = async (req, res) => {
         FROM filtered f
         INNER JOIN aberrant_ndcs ab
           ON ab.ndc = LPAD(REGEXP_REPLACE(f.ndc, '[^0-9]', '', 'g'), 11, '0')
+        INNER JOIN caremark_bins cb ON cb.bin_norm = f.bin_norm
         LEFT JOIN ws
           ON ws.ndc_normalized = LPAD(REGEXP_REPLACE(f.ndc, '[^0-9]', '', 'g'), 11, '0')
         GROUP BY LPAD(REGEXP_REPLACE(f.ndc, '[^0-9]', '', 'g'), 11, '0'), ab.product_name
