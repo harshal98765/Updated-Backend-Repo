@@ -886,18 +886,23 @@ export const getCommunityDataGlobal = async (
 
 // ── GLOBAL DRUG SEARCH (autocomplete across all user audits) ──
 // ── GLOBAL DRUG SEARCH (autocomplete across ALL audits in the system) ──
+// Display name uses ndc_sheet.drug_name when present (per-NDC override),
+// falling back to inventory_rows.drug_name. WHERE matches either, so typing
+// the renamed name still finds the drug.
 export const searchDrugNames = async (query, limit = 10) => {
-  const CLEAN_DRUG = `TRIM(REGEXP_REPLACE(drug_name, '\\s*\\(\\d{5}-\\d{4}-\\d{2}\\)\\s*$', ''))`;
+  const EFFECTIVE = `COALESCE(ns.drug_name, inventory_rows.drug_name)`;
+  const CLEAN_DRUG = `TRIM(REGEXP_REPLACE(${EFFECTIVE}, '\\s*\\(\\d{5}-\\d{4}-\\d{2}\\)\\s*$', ''))`;
 
   const result = await pool.query(
     `
-    SELECT 
+    SELECT
       ${CLEAN_DRUG} AS drug_name,
       COUNT(*) AS rx_count
     FROM inventory_rows
-    WHERE drug_name ILIKE $1
-      AND drug_name IS NOT NULL
-      AND TRIM(drug_name) != ''
+    LEFT JOIN ndc_sheet ns ON ns.ndc = inventory_rows.ndc
+    WHERE ${EFFECTIVE} ILIKE $1
+      AND ${EFFECTIVE} IS NOT NULL
+      AND TRIM(${EFFECTIVE}) != ''
     GROUP BY ${CLEAN_DRUG}
     ORDER BY rx_count DESC
     LIMIT $2
@@ -923,19 +928,20 @@ export const searchNdcSuggestions = async (query, limit = 8) => {
     const result = await pool.query(
       `
       SELECT
-        ndc,
-        MAX(drug_name)    AS drug_name,
-        MAX(brand)        AS brand,
-        MAX(package_size) AS package_size,
-        COUNT(*)          AS rx_count
+        inventory_rows.ndc                                        AS ndc,
+        MAX(COALESCE(ns.drug_name, inventory_rows.drug_name))     AS drug_name,
+        MAX(brand)                                                AS brand,
+        MAX(package_size)                                         AS package_size,
+        COUNT(*)                                                  AS rx_count
       FROM inventory_rows
-      WHERE ndc IS NOT NULL
-        AND TRIM(ndc) <> ''
+      LEFT JOIN ndc_sheet ns ON ns.ndc = inventory_rows.ndc
+      WHERE inventory_rows.ndc IS NOT NULL
+        AND TRIM(inventory_rows.ndc) <> ''
         AND (
-          drug_name ILIKE $1
-          OR ($2::text IS NOT NULL AND REGEXP_REPLACE(ndc, '[^0-9]', '', 'g') ILIKE $2)
+          COALESCE(ns.drug_name, inventory_rows.drug_name) ILIKE $1
+          OR ($2::text IS NOT NULL AND REGEXP_REPLACE(inventory_rows.ndc, '[^0-9]', '', 'g') ILIKE $2)
         )
-      GROUP BY ndc
+      GROUP BY inventory_rows.ndc
       ORDER BY rx_count DESC
       LIMIT $3
       `,
@@ -963,9 +969,35 @@ export const searchNdcSuggestions = async (query, limit = 8) => {
 // Supports two modes:
 //   1) ingredient mode: filters by first word of drug_name (e.g. "ELIQUIS")
 //   2) ndc mode: filters by exact NDC (digits-only, last 10 digits match)
+//
+// Display names come from a per-NDC canonical name (ndc_sheet.drug_name wins,
+// inventory_rows.drug_name as fallback) computed once in a CTE, so each NDC
+// has exactly one display name and never appears twice in the response.
 export const getDrugLookupGlobal = async (ingredient, filters = {}) => {
   const { bin, pcn, grp, ndc } = filters;
-  const CLEAN_DRUG = `TRIM(REGEXP_REPLACE(drug_name, '\\s*\\(\\d{5}-\\d{4}-\\d{2}\\)\\s*$', ''))`;
+
+  // Normalize an NDC to 10 digits (strip non-digits, left-pad to 11, take last 10)
+  const NDC_NORM = (col) =>
+    `RIGHT(LPAD(REGEXP_REPLACE(${col}, '[^0-9]', '', 'g'), 11, '0'), 10)`;
+
+  // Per-NDC canonical name. JOIN on normalized NDC so format differences
+  // between ndc_sheet.ndc and inventory_rows.ndc (hyphens, leading zeros)
+  // don't break the match.
+  const NDC_NAME_CTE = `
+    WITH ndc_name AS (
+      SELECT
+        ${NDC_NORM("inventory_rows.ndc")} AS ndc_norm,
+        COALESCE(MAX(ns.drug_name), MAX(inventory_rows.drug_name)) AS raw_name
+      FROM inventory_rows
+      LEFT JOIN ndc_sheet ns
+        ON ${NDC_NORM("ns.ndc")} = ${NDC_NORM("inventory_rows.ndc")}
+      WHERE inventory_rows.ndc IS NOT NULL
+        AND TRIM(inventory_rows.ndc) <> ''
+      GROUP BY ${NDC_NORM("inventory_rows.ndc")}
+    )
+  `;
+
+  const CLEAN_DRUG = `TRIM(REGEXP_REPLACE(nn.raw_name, '\\s*\\(\\d{5}-\\d{4}-\\d{2}\\)\\s*$', ''))`;
 
   // Build WHERE clause dynamically
   const conditions = [];
@@ -976,12 +1008,13 @@ export const getDrugLookupGlobal = async (ingredient, filters = {}) => {
   if (ndc && String(ndc).trim()) {
     const digits = String(ndc).replace(/\D/g, "");
     conditions.push(
-      `RIGHT(LPAD(REGEXP_REPLACE(ndc, '[^0-9]', '', 'g'), 11, '0'), 10) = RIGHT(LPAD($${pIdx}, 11, '0'), 10)`
+      `${NDC_NORM("inventory_rows.ndc")} = RIGHT(LPAD($${pIdx}, 11, '0'), 10)`,
     );
     params.push(digits);
     pIdx++;
   } else if (ingredient && String(ingredient).trim()) {
-    conditions.push(`UPPER(SPLIT_PART(TRIM(drug_name), ' ', 1)) = UPPER($${pIdx})`);
+    // Filter by canonical name's first word, so renames in ndc_sheet are searchable.
+    conditions.push(`UPPER(SPLIT_PART(TRIM(nn.raw_name), ' ', 1)) = UPPER($${pIdx})`);
     params.push(ingredient);
     pIdx++;
   } else {
@@ -1014,9 +1047,10 @@ export const getDrugLookupGlobal = async (ingredient, filters = {}) => {
 
   const whereClause = conditions.join(" AND ");
 
-  // Parent rows — grouped by cleaned drug_name
+  // Parent rows — grouped by canonical drug name
   const drugsRes = await pool.query(
     `
+    ${NDC_NAME_CTE}
     SELECT
       ${CLEAN_DRUG}                                              AS drug_name,
       MAX(brand)                                                 AS brand,
@@ -1028,6 +1062,7 @@ export const getDrugLookupGlobal = async (ingredient, filters = {}) => {
         / NULLIF(SUM(quantity), 0)                               AS avg_ins_paid_per_unit
     FROM inventory_rows
     INNER JOIN audits a ON a.id = inventory_rows.audit_id
+    INNER JOIN ndc_name nn ON nn.ndc_norm = ${NDC_NORM("inventory_rows.ndc")}
     WHERE ${whereClause}
     GROUP BY ${CLEAN_DRUG}
     ORDER BY rx_count DESC
@@ -1035,24 +1070,26 @@ export const getDrugLookupGlobal = async (ingredient, filters = {}) => {
     params,
   );
 
-  // Child rows — grouped by cleaned drug_name + NDC
+  // Child rows — one per normalized NDC. NDC never appears twice.
   const ndcRes = await pool.query(
     `
+    ${NDC_NAME_CTE}
     SELECT
-      ${CLEAN_DRUG}                                              AS drug_name,
-      RIGHT(LPAD(REGEXP_REPLACE(ndc, '[^0-9]', '', 'g'), 11, '0'), 10) AS ndc,
-      MAX(brand)                                                 AS brand,
-      COUNT(DISTINCT (a.user_id,rx_number,date_filled))          AS rx_count,
-      SUM(quantity)::numeric / NULLIF(COUNT(*), 0)               AS avg_qty_per_rx,
+      MAX(${CLEAN_DRUG})                                              AS drug_name,
+      ${NDC_NORM("inventory_rows.ndc")}                               AS ndc,
+      MAX(brand)                                                      AS brand,
+      COUNT(DISTINCT (a.user_id,rx_number,date_filled))               AS rx_count,
+      SUM(quantity)::numeric / NULLIF(COUNT(*), 0)                    AS avg_qty_per_rx,
       SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
-        / NULLIF(COUNT(*), 0)                                    AS avg_ins_paid_per_rx,
+        / NULLIF(COUNT(*), 0)                                         AS avg_ins_paid_per_rx,
       SUM(COALESCE(primary_paid,0) + COALESCE(secondary_paid,0))
-        / NULLIF(SUM(quantity), 0)                               AS avg_ins_paid_per_unit
+        / NULLIF(SUM(quantity), 0)                                    AS avg_ins_paid_per_unit
     FROM inventory_rows
     INNER JOIN audits a ON a.id = inventory_rows.audit_id
+    INNER JOIN ndc_name nn ON nn.ndc_norm = ${NDC_NORM("inventory_rows.ndc")}
     WHERE ${whereClause}
-    GROUP BY ${CLEAN_DRUG}, RIGHT(LPAD(REGEXP_REPLACE(ndc, '[^0-9]', '', 'g'), 11, '0'), 10)
-    ORDER BY ${CLEAN_DRUG}, rx_count DESC
+    GROUP BY ${NDC_NORM("inventory_rows.ndc")}
+    ORDER BY drug_name, rx_count DESC
     `,
     params,
   );

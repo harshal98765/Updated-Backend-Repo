@@ -143,4 +143,89 @@ router.delete("/excel/row/:id", async (req, res) => {
   }
 });
 
+// ──────────────────────────────────────────────────────────────
+// PUT /api/ndc-sheet/:ndc
+// Updates drug_name for every inventory_rows row that has
+// the given NDC (keeps data consistent across all audits).
+// Body: { drug_name: string }
+// ──────────────────────────────────────────────────────────────
+router.put("/ndc-sheet/:id", async (req, res) => {
+  const { id } = req.params;
+
+  const { drug_name, status } = req.body;
+
+  try {
+    // validation
+    if (status && !["pending", "reviewed"].includes(status)) {
+      return res.status(400).json({
+        error: "Invalid status",
+      });
+    }
+
+    const result = await pool.query(
+      `
+      UPDATE ndc_sheet
+      SET
+        drug_name = COALESCE($1, drug_name),
+        status = COALESCE($2, status),
+        updated_at = NOW()
+      WHERE id = $3
+      RETURNING *
+      `,
+      [drug_name?.trim(), status, id],
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: "NDC entry not found",
+      });
+    }
+
+    res.json({
+      message: "NDC updated successfully",
+      data: result.rows[0],
+    });
+  } catch (err) {
+    console.error("NDC update error:", err);
+
+    res.status(500).json({
+      error: "Failed to update NDC",
+    });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────
+// GET /api/ndc-sheet/search?q=term
+// Quick search by NDC or drug_name (for autocomplete / filter)
+// ──────────────────────────────────────────────────────────────
+router.delete("/ndc-sheet/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await pool.query(
+      `
+      DELETE FROM ndc_sheet
+      WHERE id = $1
+      `,
+      [id],
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: "Entry not found",
+      });
+    }
+
+    res.json({
+      message: "Deleted successfully",
+    });
+  } catch (err) {
+    console.error("Delete error:", err);
+
+    res.status(500).json({
+      error: "Failed to delete",
+    });
+  }
+});
+
 export default router;

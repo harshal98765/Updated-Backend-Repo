@@ -7,6 +7,7 @@ import adminRoutes from "./routes/admin.routes.js";
 import supplierRoutes from "./routes/supplier.routes.js"; // --- newly added supplier routes, adjust the path as needed
 import inventoryViewRoutes from "./routes/inventoryView.routes.js";
 import publishingRoutes from "./routes/publishing.routes.js";
+import ndcSheetRoutes from "./routes/ndcSheet.routes.js";
 
 const app = express();
 
@@ -28,5 +29,6 @@ app.use("/admin", adminRoutes);
 app.use("/api", supplierRoutes); //----- newly added supplier routes, adjust the base path as needed 
 app.use("/api/inventory-view", inventoryViewRoutes);
 app.use("/post", publishingRoutes);
+app.use("/api", ndcSheetRoutes);
 
 export default app;

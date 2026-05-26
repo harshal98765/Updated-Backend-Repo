@@ -165,3 +165,16 @@ CREATE TABLE pharmacy_details (
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
+
+-- NDC SHEET (editable canonical drug name per NDC)
+CREATE TABLE IF NOT EXISTS ndc_sheet (
+    id BIGSERIAL PRIMARY KEY,
+    ndc TEXT NOT NULL UNIQUE,
+    drug_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'reviewed')),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ndc_sheet_ndc ON ndc_sheet(ndc);
