@@ -1171,28 +1171,22 @@ export const getDrugLookupLanding = async () => {
   };
 };
 
-// ── NDC PREFIX AUTOCOMPLETE ──
-// Strips all non-digits from both sides so any of these match the same row:
-//   73352-0086-60 / 73352008660 / 73352-0086 / 73352
+// ── NDC PREFIX AUTOCOMPLETE — sourced from ndc_sheet only ──
+// Matches NDC digits as a prefix (so 73352, 73352-0086, 73352008660 all hit
+// the same row). Returns ndc + drug_name verbatim from ndc_sheet.
 export const searchNdcAutocomplete = async (query, limit = 10) => {
   const numericOnly = String(query ?? "").replace(/\D/g, "");
   if (numericOnly.length < 2) return [];
-
-  const CLEAN_DRUG = `TRIM(REGEXP_REPLACE(drug_name, '\\s*\\(\\d{5}-\\d{4}-\\d{2}\\)\\s*$', ''))`;
 
   try {
     const result = await pool.query(
       `
       SELECT
         ndc,
-        MAX(${CLEAN_DRUG}) AS drug_name,
-        COUNT(*)           AS rx_count
-      FROM inventory_rows
-      WHERE ndc IS NOT NULL
-        AND TRIM(ndc) <> ''
-        AND REGEXP_REPLACE(ndc, '[^0-9]', '', 'g') ILIKE $1 || '%'
-      GROUP BY ndc
-      ORDER BY rx_count DESC
+        drug_name
+      FROM ndc_sheet
+      WHERE REGEXP_REPLACE(ndc, '[^0-9]', '', 'g') ILIKE $1 || '%'
+      ORDER BY drug_name
       LIMIT $2
       `,
       [numericOnly, limit],
@@ -1201,7 +1195,7 @@ export const searchNdcAutocomplete = async (query, limit = 10) => {
     return result.rows.map((r) => ({
       name: r.drug_name,
       ndc: r.ndc,
-      rx_count: Number(r.rx_count),
+      rx_count: 0,
     }));
   } catch (err) {
     const msg = String(err?.message || "").slice(0, 300);
