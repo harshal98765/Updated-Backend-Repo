@@ -8,6 +8,7 @@ import supplierRoutes from "./routes/supplier.routes.js"; // --- newly added sup
 import inventoryViewRoutes from "./routes/inventoryView.routes.js";
 import publishingRoutes from "./routes/publishing.routes.js";
 import ndcSheetRoutes from "./routes/ndcSheet.routes.js";
+import auditShareGroupRoutes from "./routes/auditShareGroups.routes.js";
 
 const app = express();
 
@@ -30,5 +31,6 @@ app.use("/api", supplierRoutes); //----- newly added supplier routes, adjust the
 app.use("/api/inventory-view", inventoryViewRoutes);
 app.use("/post", publishingRoutes);
 app.use("/api", ndcSheetRoutes);
+app.use("/audit-groups", auditShareGroupRoutes); // teammate's group system (matches her frontend's /audit-groups/...)
 
 export default app;
