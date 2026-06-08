@@ -187,6 +187,20 @@ export const getFullReport = async (req, res) => {
         BOOL_OR(ab.ndc IS NOT NULL AND UPPER(TRIM(COALESCE(pbm.pbm_name, ''))) LIKE '%CAREMARK%') AS is_aberrant,
 
         COUNT(DISTINCT CASE
+          WHEN UPPER(TRIM(COALESCE(pbm.pbm_name, ''))) LIKE '%CAREMARK%'
+            AND (i.date_filled IS NULL
+                 OR (a.inventory_start_date IS NULL AND a.inventory_end_date IS NULL)
+                 OR i.date_filled BETWEEN a.inventory_start_date AND a.inventory_end_date)
+          THEN i.rx_number END) AS caremark_claims_count,
+
+        SUM(CASE
+          WHEN UPPER(TRIM(COALESCE(pbm.pbm_name, ''))) LIKE '%CAREMARK%'
+            AND (i.date_filled IS NULL
+                 OR (a.inventory_start_date IS NULL AND a.inventory_end_date IS NULL)
+                 OR i.date_filled BETWEEN a.inventory_start_date AND a.inventory_end_date)
+          THEN COALESCE(i.primary_paid, 0) + COALESCE(i.secondary_paid, 0) ELSE 0 END) AS caremark_amount_total,
+
+        COUNT(DISTINCT CASE
           WHEN ab.ndc IS NOT NULL
             AND UPPER(TRIM(COALESCE(pbm.pbm_name, ''))) LIKE '%CAREMARK%'
             AND (i.date_filled IS NULL
@@ -299,12 +313,35 @@ export const getAberrantRiskSummary = async (req, res) => {
         GROUP BY LPAD(REGEXP_REPLACE(wr.ndc, '[^0-9]', '', 'g'), 11, '0')
       )`;
 
+    console.log('[AberrantRisk] NEW CODE v2 — audit:', id, 'month:', month);
+
+    // Debug: how many Caremark BINs exist + how many claims match them
+    const debugResult = await pool.query(
+      `WITH caremark_bins AS (
+         SELECT DISTINCT LTRIM(UPPER(TRIM(bin)), '0') AS bin_norm
+         FROM master_sheet WHERE UPPER(TRIM(pbm_name)) LIKE '%CAREMARK%'
+       )
+       SELECT
+         (SELECT COUNT(*) FROM caremark_bins) AS caremark_bin_count,
+         COUNT(i.rx_number) AS total_dec_rows,
+         COUNT(CASE WHEN cb.bin_norm IS NOT NULL THEN 1 END) AS caremark_matched_rows,
+         array_agg(DISTINCT LTRIM(UPPER(TRIM(COALESCE(i.primary_bin,''))), '0')) FILTER (WHERE cb.bin_norm IS NOT NULL) AS matched_bins
+       FROM inventory_rows i
+       LEFT JOIN caremark_bins cb
+         ON cb.bin_norm = LTRIM(UPPER(TRIM(COALESCE(i.primary_bin,''))), '0')
+       WHERE i.audit_id = $1
+         AND i.date_filled IS NOT NULL
+         AND TO_CHAR(i.date_filled, 'YYYY-MM') = $2`,
+      [id, month],
+    );
+    console.log('[AberrantRisk] debug:', JSON.stringify(debugResult.rows[0]));
+
     const [summaryResult, ndcResult] = await Promise.all([
       pool.query(
         `${summaryCte}
         SELECT
-          COUNT(DISTINCT f.rx_number)                                                                     AS total_claims,
-          COALESCE(SUM(f.amount), 0)                                                                      AS total_amount,
+          COUNT(DISTINCT CASE WHEN cb.bin_norm IS NOT NULL THEN f.rx_number END)                          AS total_claims,
+          COALESCE(SUM(CASE WHEN cb.bin_norm IS NOT NULL THEN f.amount ELSE 0 END), 0)                    AS total_amount,
           COUNT(DISTINCT CASE WHEN ab.ndc IS NOT NULL AND cb.bin_norm IS NOT NULL THEN f.rx_number END)   AS aberrant_claims,
           COALESCE(SUM(CASE WHEN ab.ndc IS NOT NULL AND cb.bin_norm IS NOT NULL THEN f.amount ELSE 0 END), 0) AS aberrant_amount
         FROM filtered f
@@ -333,6 +370,8 @@ export const getAberrantRiskSummary = async (req, res) => {
         [id, month],
       ),
     ]);
+
+    console.log('[AberrantRisk] summary raw:', JSON.stringify(summaryResult.rows[0]));
 
     return res.json({
       summary: summaryResult.rows[0],
