@@ -888,16 +888,31 @@ export const getCommunityDataGlobal = async (
 // Returns drug_name verbatim from ndc_sheet. Drugs not in ndc_sheet
 // won't appear in suggestions (by design — ndc_sheet is the source of truth).
 export const searchDrugNames = async (query, limit = 10) => {
+  // Split into whitespace-separated tokens and require EVERY token to appear
+  // somewhere in drug_name (order-independent AND match). This lets multi-word
+  // queries like "nystatin triamcinol" match "NYSTATIN, TRIAMCINOL ..." even
+  // though punctuation/word-order differ. A single token behaves like before.
+  const tokens = String(query ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (tokens.length === 0) return [];
+
+  const conditions = tokens.map((_, i) => `drug_name ILIKE $${i + 1}`);
+  const params = tokens.map((t) => `%${t}%`);
+  params.push(limit);
+
   const result = await pool.query(
     `
     SELECT drug_name
     FROM ndc_sheet
-    WHERE drug_name ILIKE $1
+    WHERE ${conditions.join(" AND ")}
+      AND LENGTH(drug_name) <= 140
     GROUP BY drug_name
     ORDER BY drug_name
-    LIMIT $2
+    LIMIT $${tokens.length + 1}
     `,
-    [`%${query}%`, limit],
+    params,
   );
 
   return result.rows.map((r) => ({
@@ -997,10 +1012,16 @@ export const getDrugLookupGlobal = async (ingredient, filters = {}) => {
     params.push(digits);
     pIdx++;
   } else if (ingredient && String(ingredient).trim()) {
-    // Filter by canonical name's first word, so renames in ndc_sheet are searchable.
-    conditions.push(`UPPER(SPLIT_PART(TRIM(nn.raw_name), ' ', 1)) = UPPER($${pIdx})`);
-    params.push(ingredient);
-    pIdx++;
+    // Match every whitespace token of the search term anywhere in the canonical
+    // name (order-independent), so e.g. "PROBIOTICS" lists BOTH
+    // "PROBIOTICS (BIOSTORA)" and "MICROBALANCE PROBIOTICS" — not just names
+    // that START with the term.
+    const ingTokens = String(ingredient).trim().split(/\s+/).filter(Boolean);
+    for (const tok of ingTokens) {
+      conditions.push(`nn.raw_name ILIKE $${pIdx}`);
+      params.push(`%${tok}%`);
+      pIdx++;
+    }
   } else {
     // Neither provided — return empty shape
     return { ingredient: "", filters: { bin: null, pcn: null, grp: null, ndc: null }, drugs: [] };
