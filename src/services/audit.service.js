@@ -1027,6 +1027,10 @@ export const getDrugLookupGlobal = async (ingredient, filters = {}) => {
     return { ingredient: "", filters: { bin: null, pcn: null, grp: null, ndc: null }, drugs: [] };
   }
 
+  // Exclude corrupted rows where an entire CSV blob was imported into a single
+  // drug_name cell (real drug names are short). Keeps junk out of results.
+  conditions.push(`LENGTH(nn.raw_name) <= 140`);
+
   // ── Optional BIN/PCN/GRP filters ──
   if (bin && String(bin).trim()) {
     conditions.push(
