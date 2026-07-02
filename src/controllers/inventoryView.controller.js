@@ -126,10 +126,12 @@ export const getListings = async (req, res) => {
       `;
       queryParams = [userId, group_id];
     } else {
-      // Default: own listings + public + groups_only (where I'm a member)
+      // Default: own listings (by user or pharmacy) + public + groups_only
+      // (where I'm a member)
       whereClause = `
         AND (
           l.user_id = $1
+          OR ($3::uuid IS NOT NULL AND l.pharmacy_id = $3::uuid)
           OR l.visibility = 'public'
           OR (
             l.visibility = 'groups_only'
@@ -141,7 +143,11 @@ export const getListings = async (req, res) => {
           )
         )
       `;
-      queryParams = [userId, memberGroupIds.length ? memberGroupIds : [null]];
+      queryParams = [
+        userId,
+        memberGroupIds.length ? memberGroupIds : [null],
+        myPharmacyId,
+      ];
     }
 
     const result = await pool.query(
@@ -172,8 +178,16 @@ export const getListings = async (req, res) => {
     );
 
     const all = result.rows.map(mapListingRow);
-    const listings = all.filter((l) => l.owner_user_id !== userId);
-    const my_listings = all.filter((l) => l.owner_user_id === userId);
+    // "My Listings" = my pharmacy's listings (fallback to creator id). Pharmacy-
+    // based ownership is robust when a listing's user_id differs from the viewing
+    // session id (e.g. multiple users share a pharmacy).
+    const isMine = (l) =>
+      (myPharmacyId && l.pharmacy?.id === myPharmacyId) ||
+      l.owner_user_id === userId;
+    // Search Network shows every visible listing (including my own);
+    // My Listings shows only my pharmacy's listings.
+    const listings = all;
+    const my_listings = all.filter((l) => isMine(l));
 
     return res.json({ listings, my_listings });
   } catch (err) {
