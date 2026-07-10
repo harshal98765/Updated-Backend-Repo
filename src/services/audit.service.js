@@ -526,9 +526,7 @@ export const saveWholesalerFiles = async (auditId, filesArray) => {
             mapping.quantity &&
             row[mapping.quantity] !== undefined &&
             row[mapping.quantity] !== ""
-              ? parseInt(
-                  String(row[mapping.quantity]).replace(/[^0-9-]/g, "")
-                ) || 0
+              ? cleanInt(row[mapping.quantity]) ?? 0
               : null;
           const unitCost =
             mapping.unitPrice && row[mapping.unitPrice]

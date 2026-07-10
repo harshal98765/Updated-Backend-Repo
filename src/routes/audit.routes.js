@@ -15,6 +15,7 @@ import {
   getInventoryFiles,
   getCommunityData,
   getWholesalerFiles,
+  deleteWholesalerFile,
   getInventoryDetail,
   getDrugLookup,
   searchDrugNames,
@@ -71,6 +72,9 @@ router.post("/:id/inventory/rows", createInventoryRows);
 // ============================
 
 router.post("/:id/wholesalers", uploadWholesalers.any(), uploadWholesalerFiles);
+
+// Permanently delete a single wholesaler's file for an audit (?name=SUPPLIER)
+router.delete("/:id/wholesalers", deleteWholesalerFile);
 
 // ============================
 // GET REPORTS
